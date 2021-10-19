@@ -44,8 +44,6 @@ use vrrb_lib::{
 
 pub const VALIDATOR_THRESHOLD: f64 = 0.60;
 
-
-
 pub enum Event<I> {
     Input(I),
     Tick,
@@ -62,6 +60,12 @@ pub enum MenuItem {
     HeaderChain,
     InvalidBlocks,
     ClaimMap,
+    TxnPool,
+    ClaimPool,
+    PendingClaims,
+    ConfirmedClaims,
+    PendingTxns,
+    ConfirmedTxns,
 }
 
 impl From<MenuItem> for usize {
@@ -76,6 +80,12 @@ impl From<MenuItem> for usize {
             MenuItem::HeaderChain => 6,
             MenuItem::InvalidBlocks => 7,
             MenuItem::ClaimMap => 8,
+            MenuItem::TxnPool => 9,
+            MenuItem::ClaimPool => 10,
+            MenuItem::PendingClaims => 11,
+            MenuItem::ConfirmedClaims => 12,
+            MenuItem::PendingTxns => 13,
+            MenuItem::ConfirmedTxns => 14,
         }
     }
 }
@@ -123,7 +133,6 @@ impl Default for App {
 #[async_std::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     enable_raw_mode().expect("can run in raw mode");
-    
     let mut rng = rand::thread_rng();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let tick_rate = tokio::time::Duration::from_millis(200);
@@ -159,9 +168,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let event_file_suffix: u8 = rng.gen();
 
     let menu_titles: Vec<_> = vec!["Home", "Wallet", "Mining", "Network", "ChainData"];
-    let events_path = format!("./data/vrrb/events_{}.json", event_file_suffix);
+    std::fs::create_dir_all("C:/Users/PC/.vrrb_data")?;
+    let events_path = format!("C:/Users/PC/.vrrb_data/events_{}.json", event_file_suffix);
     fs::File::create(events_path.clone()).unwrap();
-    write_to_json(events_path.clone(), &VrrbNetworkEvent::VrrbStarted);
+    if let Err(_) = write_to_json(events_path.clone(), &VrrbNetworkEvent::VrrbStarted) {
+        info!("Error writting to json in main.rs 164");
+    }
     let mut active_menu_item = MenuItem::Home;
     let mut wallet_list_state = ListState::default();
     let mut blockchain_fields = ListState::default();
@@ -171,6 +183,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut claim_map_list_state = ListState::default();
     let mut txn_pool_list_state = ListState::default();
     let mut claim_pool_list_state = ListState::default();
+    let mut txn_pool_status_list_state = ListState::default();
+    let mut claim_pool_status_list_state = ListState::default();
     blockchain_fields.select(Some(0));
     wallet_list_state.select(Some(0));
     last_hash_list_state.select(Some(0));
@@ -179,6 +193,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     claim_map_list_state.select(Some(0));
     txn_pool_list_state.select(Some(0));
     claim_pool_list_state.select(Some(0));
+    txn_pool_status_list_state.select(Some(0));
+    claim_pool_status_list_state.select(Some(0));
 
     //____________________________________________________________________________________________________
     // Setup log file and db files
@@ -188,8 +204,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let log_file_path = if let Some(path) = std::env::args().nth(3) {
         path
     } else {
-        std::fs::create_dir_all("./data/vrrb")?;
-        format!("./data/vrrb/vrrb_log_file_{}.log", log_file_suffix)
+        format!(
+            "C:/Users/PC/.vrrb_data/vrrb_log_file_{}.log",
+            log_file_suffix
+        )
     };
     let _ = WriteLogger::init(
         LevelFilter::Info,
@@ -221,7 +239,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = if let Some(path) = std::env::args().nth(2) {
         path
     } else {
-        format!("./data/vrrb/test_{}.db", file_suffix)
+        format!("C:/Users/PC/.vrrb_data/test_{}.db", file_suffix)
     };
 
     let network_state = NetworkState::restore(&path);
@@ -230,10 +248,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //____________________________________________________________________________________________________
     // Node initialization
     let to_message_handler = MessageHandler::new(from_message_sender.clone(), to_message_receiver);
-    let from_message_handler = MessageHandler::new(
-        to_message_sender.clone(),
-        from_message_receiver,
-    );
+    let from_message_handler =
+        MessageHandler::new(to_message_sender.clone(), from_message_receiver);
     let command_handler = CommandHandler::new(
         to_miner_sender.clone(),
         to_blockchain_sender.clone(),
@@ -345,7 +361,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::thread::spawn(move || {
         let mut rng = rand::thread_rng();
         let file_suffix: u32 = rng.gen();
-        let mut blockchain = Blockchain::new(&format!("./data/vrrb/test_chain_{}.db", file_suffix));
+        let mut blockchain = Blockchain::new(&format!(
+            "C:/Users/PC/.vrrb_data/test_chain_{}.db",
+            file_suffix
+        ));
         if let Err(_) = blockchain_to_app_sender
             .send(Command::UpdateAppBlockchain(blockchain.clone().as_bytes()))
         {
@@ -1195,7 +1214,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     rect.render_stateful_widget(left, wallet_chunks[0], &mut wallet_list_state);
                     rect.render_widget(right, wallet_chunks[1]);
                 }
-                MenuItem::Mining | MenuItem::ClaimMap => {
+                MenuItem::Mining
+                | MenuItem::ClaimMap
+                | MenuItem::TxnPool
+                | MenuItem::ClaimPool
+                | MenuItem::PendingClaims
+                | MenuItem::ConfirmedClaims
+                | MenuItem::PendingTxns
+                | MenuItem::ConfirmedTxns => {
                     let mining_data_chunks = Layout::default()
                         .direction(Direction::Horizontal)
                         .constraints(
@@ -1238,18 +1264,107 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         );
                                         rect.render_widget(data, claim_map_data_chunks[1]);
                                     }
-                                    "txn_pool" => {}
-                                    "claim_pool" => {}
-                                    "last_block" => {}
-                                    "reward_state" => {}
-                                    "network_state" => {}
-                                    "neighbors" => {}
-                                    "current_nonce_timer" => {}
-                                    "n_miners" => {}
-                                    "init" => {}
-                                    "abandoned_claim_counter" => {}
-                                    "abandoned_claim" => {}
-                                    "secret_key" => {}
+                                    "txn_pool" => {
+                                        let txn_pool_data_chunks = Layout::default()
+                                            .direction(Direction::Horizontal)
+                                            .constraints(
+                                                [
+                                                    Constraint::Percentage(30),
+                                                    Constraint::Percentage(70),
+                                                ]
+                                                .as_ref(),
+                                            )
+                                            .split(mining_data_chunks[1]);
+                                        let txn_and_status_data_chunks = Layout::default()
+                                            .direction(Direction::Horizontal)
+                                            .constraints(
+                                                [
+                                                    Constraint::Percentage(50),
+                                                    Constraint::Percentage(50),
+                                                ]
+                                                .as_ref(),
+                                            )
+                                            .split(txn_pool_data_chunks[0]);
+
+                                        let (status, txn_id, data) = render_txn_pool(
+                                            &txn_pool_status_list_state,
+                                            &txn_pool_list_state,
+                                            &miner.txn_pool.clone(),
+                                        );
+
+                                        rect.render_stateful_widget(
+                                            status,
+                                            txn_and_status_data_chunks[0],
+                                            &mut txn_pool_status_list_state,
+                                        );
+                                        rect.render_stateful_widget(
+                                            txn_id,
+                                            txn_and_status_data_chunks[1],
+                                            &mut txn_pool_list_state,
+                                        );
+                                        rect.render_widget(data, txn_pool_data_chunks[1]);
+                                    }
+                                    "claim_pool" => {
+                                        let claim_pool_data_chunks = Layout::default()
+                                            .direction(Direction::Horizontal)
+                                            .constraints(
+                                                [
+                                                    Constraint::Percentage(30),
+                                                    Constraint::Percentage(70),
+                                                ]
+                                                .as_ref(),
+                                            )
+                                            .split(mining_data_chunks[1]);
+                                        let claim_and_status_data_chunks = Layout::default()
+                                            .direction(Direction::Horizontal)
+                                            .constraints(
+                                                [
+                                                    Constraint::Percentage(50),
+                                                    Constraint::Percentage(50),
+                                                ]
+                                                .as_ref(),
+                                            )
+                                            .split(claim_pool_data_chunks[0]);
+
+                                        let (status, pubkey, data) = render_claim_pool(
+                                            &claim_pool_status_list_state,
+                                            &claim_pool_list_state,
+                                            &miner.claim_pool.clone(),
+                                        );
+
+                                        rect.render_stateful_widget(
+                                            status,
+                                            claim_and_status_data_chunks[0],
+                                            &mut claim_pool_status_list_state,
+                                        );
+                                        rect.render_stateful_widget(
+                                            pubkey,
+                                            claim_and_status_data_chunks[1],
+                                            &mut claim_pool_list_state,
+                                        );
+                                        rect.render_widget(data, claim_pool_data_chunks[1]);
+                                    }
+                                    "last_block" => {
+                                        let table = {
+                                            if let Some(block) = miner.last_block.clone() {
+                                                render_block_table(&block)
+                                            } else {
+                                                render_empty_table()
+                                            }
+                                        };
+
+                                        rect.render_widget(table, mining_data_chunks[1]);
+                                    }
+                                    "reward_state" => {
+                                        rect.render_widget(
+                                            render_reward_state(&miner.network_state.reward_state),
+                                            mining_data_chunks[1],
+                                        );
+                                    }
+                                    "network_state" => rect.render_widget(
+                                        render_network_state(&miner.network_state),
+                                        mining_data_chunks[1],
+                                    ),
                                     _ => {}
                                 }
                             }
@@ -1515,6 +1630,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                             }
+
+                            if let MenuItem::ClaimPool = active_menu_item {
+                                if let Some(_) = app.clone().miner {
+                                    if let Some(selected) = claim_pool_status_list_state.selected()
+                                    {
+                                        let n_fields = 2;
+                                        if selected >= n_fields - 1 {
+                                            claim_pool_status_list_state.select(Some(0));
+                                        } else {
+                                            claim_pool_status_list_state.select(Some(selected + 1));
+                                        }
+                                    }
+                                }
+                            }
+
+                            if let MenuItem::TxnPool = active_menu_item {
+                                if let Some(_) = app.clone().miner {
+                                    if let Some(selected) = txn_pool_status_list_state.selected() {
+                                        let n_fields = 2;
+                                        if selected >= n_fields - 1 {
+                                            txn_pool_status_list_state.select(Some(0));
+                                        } else {
+                                            txn_pool_status_list_state.select(Some(selected + 1));
+                                        }
+                                    }
+                                }
+                            }
                         }
                         KeyCode::Up => {
                             if let MenuItem::Wallet = active_menu_item {
@@ -1600,6 +1742,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                             }
+
+                            if let MenuItem::ClaimPool = active_menu_item {
+                                if let Some(selected) = claim_pool_status_list_state.selected() {
+                                    if let Some(_) = app.clone().miner {
+                                        let n_fields = 2;
+                                        if selected > 0 {
+                                            claim_pool_status_list_state.select(Some(selected - 1));
+                                        } else {
+                                            claim_pool_status_list_state.select(Some(n_fields - 1));
+                                        }
+                                    }
+                                }
+                            }
+
+                            if let MenuItem::TxnPool = active_menu_item {
+                                if let Some(selected) = txn_pool_status_list_state.selected() {
+                                    if let Some(_) = app.clone().miner {
+                                        let n_fields = 2;
+                                        if selected > 0 {
+                                            txn_pool_status_list_state.select(Some(selected - 1));
+                                        } else {
+                                            txn_pool_status_list_state.select(Some(n_fields - 1));
+                                        }
+                                    }
+                                }
+                            }
                         }
                         KeyCode::Right => {
                             if let MenuItem::ChainData = active_menu_item {
@@ -1616,6 +1784,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
 
+                            if let MenuItem::ClaimPool = active_menu_item {
+                                if let Some(selected) = claim_pool_status_list_state.selected() {
+                                    if let Some(_) = app.clone().miner {
+                                        if selected == 0 {
+                                            active_menu_item = MenuItem::PendingClaims;
+                                        } else {
+                                            active_menu_item = MenuItem::ConfirmedClaims;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if let MenuItem::TxnPool = active_menu_item {
+                                if let Some(selected) = txn_pool_status_list_state.selected() {
+                                    if let Some(_) = app.clone().miner {
+                                        if selected == 0 {
+                                            active_menu_item = MenuItem::PendingTxns;
+                                        } else {
+                                            active_menu_item = MenuItem::ConfirmedTxns;
+                                        }
+                                    }
+                                }
+                            }
+
                             if let MenuItem::Mining = active_menu_item {
                                 if let Some(selected) = miner_fields.selected() {
                                     if let Some(miner) = app.clone().miner {
@@ -1623,6 +1815,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             &miner.get_field_names().clone()[selected];
                                         if field_selected == "claim_map" {
                                             active_menu_item = MenuItem::ClaimMap;
+                                        } else if field_selected == "claim_pool" {
+                                            active_menu_item = MenuItem::ClaimPool;
+                                        } else if field_selected == "txn_pool" {
+                                            active_menu_item = MenuItem::TxnPool;
                                         }
                                     }
                                 }
@@ -1635,8 +1831,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 active_menu_item = MenuItem::ChainData;
                             }
 
-                            if let MenuItem::ClaimMap = active_menu_item {
+                            if let MenuItem::ClaimMap | MenuItem::ClaimPool | MenuItem::TxnPool =
+                                active_menu_item
+                            {
                                 active_menu_item = MenuItem::Mining;
+                            }
+
+                            if let MenuItem::PendingClaims | MenuItem::ConfirmedClaims =
+                                active_menu_item
+                            {
+                                active_menu_item = MenuItem::ClaimPool;
+                            }
+
+                            if let MenuItem::PendingTxns | MenuItem::ConfirmedTxns =
+                                active_menu_item
+                            {
+                                active_menu_item = MenuItem::TxnPool;
                             }
                         }
                         _ => {}
