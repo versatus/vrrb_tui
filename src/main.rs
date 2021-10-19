@@ -169,8 +169,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let directory = {
         if let Some(dir) = std::env::args().nth(2) {
-            std::fs::create_dir_all(dir)?;
-            dir
+            std::fs::create_dir_all(dir.clone())?;
+            dir.clone()
         } else {
             std::fs::create_dir_all("./.vrrb_data".to_string())?;
             "./.vrrb_data".to_string()
@@ -178,7 +178,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let menu_titles: Vec<_> = vec!["Home", "Wallet", "Mining", "Network", "ChainData"];
-    let events_path = format!("{}/events_{}.json", directory, event_file_suffix);
+    let events_path = format!("{}/events_{}.json", directory.clone(), event_file_suffix);
     fs::File::create(events_path.clone()).unwrap();
     if let Err(_) = write_to_json(events_path.clone(), &VrrbNetworkEvent::VrrbStarted) {
         info!("Error writting to json in main.rs 164");
@@ -213,7 +213,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let log_file_path = if let Some(path) = std::env::args().nth(4) {
         path
     } else {
-        format!("{}/vrrb_log_file_{}.log", directory, log_file_suffix)
+        format!("{}/vrrb_log_file_{}.log", directory.clone(), log_file_suffix)
     };
     let _ = WriteLogger::init(
         LevelFilter::Info,
@@ -245,7 +245,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = if let Some(path) = std::env::args().nth(5) {
         path
     } else {
-        format!("{}/test_{}.db", directory, file_suffix)
+        format!("{}/test_{}.db", directory.clone(), file_suffix)
     };
 
     let network_state = NetworkState::restore(&path);
