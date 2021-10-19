@@ -167,9 +167,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let event_file_suffix: u8 = rng.gen();
 
+    let directory = {
+        if let Some(dir) = std::env::args().nth(2) {
+            std::fs::create_dir_all(dir)?;
+            dir
+        } else {
+            std::fs::create_dir_all("./.vrrb_data".to_string())?;
+            "./.vrrb_data".to_string()
+        }
+    };
+
     let menu_titles: Vec<_> = vec!["Home", "Wallet", "Mining", "Network", "ChainData"];
-    std::fs::create_dir_all("C:/Users/PC/.vrrb_data")?;
-    let events_path = format!("C:/Users/PC/.vrrb_data/events_{}.json", event_file_suffix);
+    let events_path = format!("{}/events_{}.json", directory, event_file_suffix);
     fs::File::create(events_path.clone()).unwrap();
     if let Err(_) = write_to_json(events_path.clone(), &VrrbNetworkEvent::VrrbStarted) {
         info!("Error writting to json in main.rs 164");
@@ -201,13 +210,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let node_type = NodeAuth::Full;
     let log_file_suffix: u8 = rng.gen();
-    let log_file_path = if let Some(path) = std::env::args().nth(3) {
+    let log_file_path = if let Some(path) = std::env::args().nth(4) {
         path
     } else {
-        format!(
-            "C:/Users/PC/.vrrb_data/vrrb_log_file_{}.log",
-            log_file_suffix
-        )
+        format!("{}/vrrb_log_file_{}.log", directory, log_file_suffix)
     };
     let _ = WriteLogger::init(
         LevelFilter::Info,
@@ -228,7 +234,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (to_app_sender, mut to_app_receiver) = mpsc::unbounded_channel();
     //____________________________________________________________________________________________________
 
-    let wallet = if let Some(secret_key) = std::env::args().nth(4) {
+    let wallet = if let Some(secret_key) = std::env::args().nth(3) {
         WalletAccount::restore_from_private_key(secret_key)
     } else {
         WalletAccount::new()
@@ -236,10 +242,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut rng = rand::thread_rng();
     let file_suffix: u32 = rng.gen();
-    let path = if let Some(path) = std::env::args().nth(2) {
+    let path = if let Some(path) = std::env::args().nth(5) {
         path
     } else {
-        format!("C:/Users/PC/.vrrb_data/test_{}.db", file_suffix)
+        format!("{}/test_{}.db", directory, file_suffix)
     };
 
     let network_state = NetworkState::restore(&path);
@@ -288,13 +294,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //____________________________________________________________________________________________________
     // Dial peer if provided
     if let Some(to_dial) = std::env::args().nth(1) {
-        let dialing = to_dial.clone();
-        match to_dial.parse() {
-            Ok(to_dial) => match swarm.dial_addr(to_dial) {
-                Ok(_) => {}
-                Err(e) => info!("Dial {:?} failed: {:?}", dialing, e),
-            },
-            Err(err) => info!("Failed to parse address to dial {:?}", err),
+        if to_dial != "None".to_string() { 
+            let dialing = to_dial.clone();
+            match to_dial.parse() {
+                Ok(to_dial) => match swarm.dial_addr(to_dial) {
+                    Ok(_) => {}
+                    Err(e) => info!("Dial {:?} failed: {:?}", dialing, e),
+                },
+                Err(err) => info!("Failed to parse address to dial {:?}", err),
+            }
         }
     }
     //____________________________________________________________________________________________________
