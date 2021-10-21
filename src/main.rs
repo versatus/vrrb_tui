@@ -213,7 +213,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let log_file_path = if let Some(path) = std::env::args().nth(4) {
         path
     } else {
-        format!("{}/vrrb_log_file_{}.log", directory.clone(), log_file_suffix)
+        format!(
+            "{}/vrrb_log_file_{}.log",
+            directory.clone(),
+            log_file_suffix
+        )
     };
     let _ = WriteLogger::init(
         LevelFilter::Info,
@@ -245,7 +249,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = if let Some(path) = std::env::args().nth(5) {
         path
     } else {
-        format!("{}/test_{}.db", directory.clone(), file_suffix)
+        format!("{}/test_{}.json", directory.clone(), file_suffix)
     };
 
     let network_state = NetworkState::restore(&path);
@@ -294,7 +298,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //____________________________________________________________________________________________________
     // Dial peer if provided
     if let Some(to_dial) = std::env::args().nth(1) {
-        if to_dial != "None".to_string() { 
+        if to_dial != "None".to_string() {
             let dialing = to_dial.clone();
             match to_dial.parse() {
                 Ok(to_dial) => match swarm.dial_addr(to_dial) {
@@ -585,8 +589,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                         if let Some(bytes) = components.ledger {
                             let new_ledger = Ledger::from_bytes(&bytes);
-                            blockchain_network_state
-                                .update_ledger(new_ledger, blockchain_reward_state);
+                            blockchain_network_state.update_ledger(new_ledger);
                         }
 
                         if let Some(bytes) = components.archive {
@@ -1365,12 +1368,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                     "reward_state" => {
                                         rect.render_widget(
-                                            render_reward_state(&miner.network_state.reward_state),
+                                            render_reward_state(
+                                                &miner.network_state.reward_state.clone(),
+                                            ),
                                             mining_data_chunks[1],
                                         );
                                     }
                                     "network_state" => rect.render_widget(
-                                        render_network_state(&miner.network_state),
+                                        render_network_state(&miner.network_state.clone()),
                                         mining_data_chunks[1],
                                     ),
                                     _ => {}
