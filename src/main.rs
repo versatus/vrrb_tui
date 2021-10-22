@@ -374,8 +374,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut rng = rand::thread_rng();
         let file_suffix: u32 = rng.gen();
         let mut blockchain = Blockchain::new(&format!(
-            "C:/Users/PC/.vrrb_data/test_chain_{}.db",
-            file_suffix
+            "{}/.vrrb_data/test_chain_{}.db",
+            directory, file_suffix
         ));
         if let Err(_) = blockchain_to_app_sender
             .send(Command::UpdateAppBlockchain(blockchain.clone().as_bytes()))
