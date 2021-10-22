@@ -374,7 +374,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut rng = rand::thread_rng();
         let file_suffix: u32 = rng.gen();
         let mut blockchain = Blockchain::new(&format!(
-            "{}/.vrrb_data/test_chain_{}.db",
+            "{}/test_chain_{}.db",
             directory, file_suffix
         ));
         if let Err(_) = blockchain_to_app_sender
