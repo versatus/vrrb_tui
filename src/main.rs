@@ -1,16 +1,21 @@
 use clipboard::{ClipboardContext, ClipboardProvider};
+use commands::command::Command;
 use crossterm::{
     event::{self, Event as CEvent, KeyCode, KeyModifiers},
     terminal::{disable_raw_mode, enable_raw_mode},
 };
-use libp2p::gossipsub::IdentTopic as Topic;
-use libp2p::multiaddr::multiaddr;
-use libp2p::Multiaddr;
+use public_ip;
+use gossipsub::message_types::MessageType;
 use log::info;
+use network::components::StateComponent;
+use network::protocol::{write_to_json, VrrbNetworkEvent};
+use node::handler::{CommandHandler, MessageHandler};
+use node::node::{Node, NodeAuth};
 use rand::Rng;
 use ritelinked::LinkedHashMap;
 use simplelog::{Config, LevelFilter, WriteLogger};
 use std::fs;
+use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 use strum_macros::EnumIter;
 use tokio::sync::mpsc;
@@ -22,23 +27,19 @@ use tui::{
     widgets::{Block, BorderType, Borders, ListState, Paragraph, Tabs},
     Terminal,
 };
+use tui_lib::helpers::*;
 use unicode_width::UnicodeWidthStr;
-use vrrb_lib::helpers::*;
+use gossipsub::message::AsMessage;
+use gossipsub::packet::Packetize;
 use vrrb_lib::{
     block,
-    blockchain::{Blockchain, InvalidBlockErrorReason, StateComponent},
-    handler::{CommandHandler, MessageHandler},
+    blockchain::{Blockchain, InvalidBlockErrorReason},
+    claim::Claim,
     miner::Miner,
-    network::{
-        chunkable::Chunkable,
-        command_utils::Command,
-        config_utils::configure_swarm,
-        message_types::MessageType,
-        node::{Node, NodeAuth},
-        protocol::{write_to_json, VrrbNetworkEvent},
-    },
     reward::{Category, RewardState},
     state::{Components, Ledger, NetworkState},
+    txn::Txn,
+    validator::TxnValidator,
     wallet::WalletAccount,
 };
 
@@ -231,7 +232,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (to_blockchain_sender, mut to_blockchain_receiver) = mpsc::unbounded_channel();
     let (to_miner_sender, mut to_miner_receiver) = mpsc::unbounded_channel();
     let (to_message_sender, to_message_receiver) = mpsc::unbounded_channel();
-    let (from_message_sender, from_message_receiver) = mpsc::unbounded_channel();
+    let (from_message_sender, mut from_message_receiver) = mpsc::unbounded_channel();
     let (command_sender, command_receiver) = mpsc::unbounded_channel();
     let (to_swarm_sender, mut to_swarm_receiver) = mpsc::unbounded_channel();
     let (to_state_sender, mut to_state_receiver) = mpsc::unbounded_channel();
@@ -275,78 +276,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     //____________________________________________________________________________________________________
     // Swarm initialization
-    let mut swarm = configure_swarm(
-        from_message_handler.sender.clone(),
-        command_sender.clone(),
-        node_id.clone(),
-        node_key.clone(),
-        wallet.pubkey.clone().to_string(),
-        wallet.clone().get_address(1),
-        events_path.clone(),
-    )
-    .await;
+    // Need to replace swarm with custom swarm-like struct.
+    let gossipsub_config = gossipsub::gossip::GossipServiceConfig::default();
+    let mut gossip_service =
+        gossipsub::gossip::GossipService::from_config(gossipsub_config, to_swarm_receiver, to_message_sender.clone());
 
-    let port = rand::thread_rng().gen_range(9292, 19292);
-    let addr: Multiaddr = multiaddr!(Ip4([0, 0, 0, 0]), Tcp(port as u16));
-    swarm.listen_on(addr.clone()).unwrap();
-    swarm
-        .behaviour_mut()
-        .kademlia
-        .add_address(&node.id.clone(), addr.clone());
     //____________________________________________________________________________________________________
 
     //____________________________________________________________________________________________________
     // Dial peer if provided
+    let pub_ip = public_ip::addr_v4().await;
+    let first_port = 19292;
+    let addr = format!("{:?}:{:?}", pub_ip.clone().unwrap(), first_port.clone());
+
     if let Some(to_dial) = std::env::args().nth(1) {
         if to_dial != "None".to_string() {
-            let dialing = to_dial.clone();
-            match to_dial.parse() {
-                Ok(to_dial) => match swarm.dial_addr(to_dial) {
-                    Ok(_) => {}
-                    Err(e) => info!("Dial {:?} failed: {:?}", dialing, e),
-                },
-                Err(err) => info!("Failed to parse address to dial {:?}", err),
-            }
+            let socket_addr: SocketAddr = to_dial
+                .clone()
+                .parse()
+                .expect("Unable to parse socket address");
+            let message = MessageType::Identify {
+                data: addr.clone(),
+                pubkey: "0x123456789".to_string(),
+            };
+
+            let packets = message.into_message().as_packet_bytes();
+
+            packets.iter().for_each(|packet| {
+                if let Err(e) = gossip_service.sock.send_to(packet, socket_addr) {
+                    info!("Error sending identify message to bootstrap node: {:?}", e);
+                }
+            });
         }
     }
     //____________________________________________________________________________________________________
     //____________________________________________________________________________________________________
     // Swarm event thread
-    tokio::task::spawn(async move {
-        loop {
-            let evt = {
-                tokio::select! {
-                    event = swarm.next() => {
-                        info!("Unhandled Swarm Event: {:?}", event);
-                        None
-                    },
-                    command = to_swarm_receiver.recv() => {
-                        if let Some(command) = command {
-                            match command {
-                                Command::SendMessage(message) => {
-                                    Some(message)
-                                }
-                                _ => {None}
-                            }
-                        } else {
-                            None
-                        }
-                    }
-                }
-            };
 
-            if let Some(message) = evt {
-                let encoded = hex::encode(message);
-                if let Err(e) = swarm
-                    .behaviour_mut()
-                    .gossipsub
-                    .publish(Topic::new("test-net"), encoded)
-                {
-                    info!("Error sending to network: {:?}", e);
-                };
-            }
-        }
+    std::thread::spawn(move || {
+        gossip_service.start()
     });
+
     //____________________________________________________________________________________________________
 
     //____________________________________________________________________________________________________
@@ -357,8 +327,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
     });
     //____________________________________________________________________________________________________
-
-    let wallet = WalletAccount::new();
     let mut command_input = CommandInput::default();
     let mut app = App::default();
     //____________________________________________________________________________________________________
@@ -373,10 +341,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::thread::spawn(move || {
         let mut rng = rand::thread_rng();
         let file_suffix: u32 = rng.gen();
-        let mut blockchain = Blockchain::new(&format!(
-            "{}/test_chain_{}.db",
-            directory, file_suffix
-        ));
+        let mut blockchain =
+            Blockchain::new(&format!("{}/test_chain_{}.db", directory, file_suffix));
         if let Err(_) = blockchain_to_app_sender
             .send(Command::UpdateAppBlockchain(blockchain.clone().as_bytes()))
         {
@@ -391,7 +357,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // let blockchain_sender = blockchain_to_blockchain_sender.clone();
             if let Ok(command) = to_blockchain_receiver.try_recv() {
                 match command {
-                    Command::PendingBlock(block, sender_id) => {
+                    Command::PendingBlock(block_bytes, sender_id) => {
+                        let block = block::Block::from_bytes(&block_bytes);
                         if blockchain.updating_state {
                             blockchain
                                 .future_blocks
@@ -418,12 +385,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             // send state request and set blockchain.updating state to true;
                                             info!("Error: {:?}", e);
                                             if let Some((_, v)) = blockchain.future_blocks.front() {
+                                                let component = StateComponent::All;
+
                                                 let message = MessageType::GetNetworkStateMessage {
                                                     sender_id: node_id.clone().to_string(),
                                                     requested_from: sender_id,
-                                                    requestor_node_type: node_type.clone(),
+                                                    requestor_node_type: node_type
+                                                        .clone()
+                                                        .as_bytes(),
                                                     lowest_block: v.header.block_height,
-                                                    component: StateComponent::All,
+                                                    component: component.as_bytes(),
                                                 };
 
                                                 if let Err(e) = swarm_sender
@@ -449,12 +420,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             if block.header.block_height
                                                 > lowest_block.header.block_height + 1
                                             {
+                                                let component = StateComponent::All;
                                                 let message = MessageType::GetNetworkStateMessage {
                                                     sender_id: node_id.clone().to_string(),
                                                     requested_from: sender_id,
-                                                    requestor_node_type: node_type.clone(),
+                                                    requestor_node_type: node_type
+                                                        .clone()
+                                                        .as_bytes(),
                                                     lowest_block: lowest_block.header.block_height,
-                                                    component: StateComponent::All,
+                                                    component: component.as_bytes(),
                                                 };
 
                                                 if let Err(e) = swarm_sender
@@ -468,7 +442,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 // Miner is out of consensus tell them to update their state.
                                                 let message = MessageType::InvalidBlockMessage {
                                                     block_height: block.header.block_height,
-                                                    reason: e.details,
+                                                    reason: e.details.as_bytes(),
                                                     miner_id: sender_id,
                                                     sender_id: node_id.clone().to_string(),
                                                 };
@@ -486,8 +460,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
 
-                                if let Err(_) =
-                                    miner_sender.send(Command::InvalidBlock(block.clone()))
+                                if let Err(_) = miner_sender
+                                    .send(Command::InvalidBlock(block.clone().as_bytes()))
                                 {
                                     info!("Error sending command to receiver");
                                 };
@@ -499,14 +473,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             } else {
                                 blockchain_network_state.dump(&block);
-                                if let Err(_) =
-                                    miner_sender.send(Command::ConfirmedBlock(block.clone()))
+                                if let Err(_) = miner_sender
+                                    .send(Command::ConfirmedBlock(block.clone().as_bytes()))
                                 {
                                     info!("Error sending command to receiver");
                                 }
 
                                 if let Err(_) = miner_sender.send(Command::StateUpdateCompleted(
-                                    blockchain_network_state.clone(),
+                                    blockchain_network_state.clone().as_bytes(),
                                 )) {
                                     info!(
                                         "Error sending state update completed command to receiver"
@@ -521,49 +495,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
-                    Command::GetStateComponents(requestor, components) => match components {
-                        StateComponent::All => {
-                            let genesis_bytes = if let Some(genesis) = blockchain.clone().genesis {
-                                Some(genesis.clone().as_bytes())
-                            } else {
-                                None
-                            };
-                            let child_bytes = if let Some(block) = blockchain.clone().child {
-                                Some(block.clone().as_bytes())
-                            } else {
-                                None
-                            };
-                            let parent_bytes = if let Some(block) = blockchain.clone().parent {
-                                Some(block.clone().as_bytes())
-                            } else {
-                                None
-                            };
-                            let current_ledger =
-                                Some(blockchain_network_state.clone().db_to_ledger().as_bytes());
-                            let current_network_state =
-                                Some(blockchain_network_state.clone().as_bytes());
-                            let components = Components {
-                                genesis: genesis_bytes,
-                                child: child_bytes,
-                                parent: parent_bytes,
-                                blockchain: None,
-                                ledger: current_ledger,
-                                network_state: current_network_state,
-                                archive: None,
-                            };
-
-                            if let Err(e) = state_sender
-                                .send(Command::RequestedComponents(requestor, components))
-                            {
-                                info!(
-                                    "Error sending requested components to state receiver: {:?}",
-                                    e
+                    Command::GetStateComponents(requestor, components_bytes) => {
+                        let components = StateComponent::from_bytes(&components_bytes);
+                        match components {
+                            StateComponent::All => {
+                                let genesis_bytes =
+                                    if let Some(genesis) = blockchain.clone().genesis {
+                                        Some(genesis.clone().as_bytes())
+                                    } else {
+                                        None
+                                    };
+                                let child_bytes = if let Some(block) = blockchain.clone().child {
+                                    Some(block.clone().as_bytes())
+                                } else {
+                                    None
+                                };
+                                let parent_bytes = if let Some(block) = blockchain.clone().parent {
+                                    Some(block.clone().as_bytes())
+                                } else {
+                                    None
+                                };
+                                let current_ledger = Some(
+                                    blockchain_network_state.clone().db_to_ledger().as_bytes(),
                                 );
+                                let current_network_state =
+                                    Some(blockchain_network_state.clone().as_bytes());
+                                let components = Components {
+                                    genesis: genesis_bytes,
+                                    child: child_bytes,
+                                    parent: parent_bytes,
+                                    blockchain: None,
+                                    ledger: current_ledger,
+                                    network_state: current_network_state,
+                                    archive: None,
+                                };
+
+                                if let Err(e) = state_sender
+                                    .send(Command::RequestedComponents(requestor, components.as_bytes()))
+                                {
+                                    info!(
+                                        "Error sending requested components to state receiver: {:?}",
+                                        e
+                                    );
+                                }
                             }
+                            _ => {}
                         }
-                        _ => {}
-                    },
-                    Command::StateUpdateComponents(components) => {
+                    }
+                    Command::StateUpdateComponents(components_bytes) => {
+                        let components = Components::from_bytes(&components_bytes);
                         if let Some(bytes) = components.genesis {
                             blockchain.genesis = Some(block::Block::from_bytes(&bytes))
                         }
@@ -627,8 +607,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     );
                                 } else {
                                     blockchain_network_state.dump(&block);
-                                    if let Err(e) =
-                                        miner_sender.send(Command::ConfirmedBlock(block.clone()))
+                                    if let Err(e) = miner_sender
+                                        .send(Command::ConfirmedBlock(block.clone().as_bytes()))
                                     {
                                         info!(
                                             "Error sending confirmed backlog block to miner: {:?}",
@@ -647,7 +627,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         info!("Backlog processed");
 
                         if let Err(e) = miner_sender.send(Command::StateUpdateCompleted(
-                            blockchain_network_state.clone(),
+                            blockchain_network_state.clone().as_bytes(),
                         )) {
                             info!("Error sending updated network state to miner: {:?}", e);
                         }
@@ -660,20 +640,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         blockchain.updating_state = false;
                     }
                     Command::StateUpdateCompleted(network_state) => {
-                        blockchain_network_state = network_state.clone();
+                        blockchain_network_state = NetworkState::from_bytes(&network_state);
                         if let Err(e) = app_sender
                             .send(Command::UpdateAppBlockchain(blockchain.clone().as_bytes()))
                         {
                             info!("Error sending blockchain to app: {:?}", e);
                         }
                     }
-                    Command::ClaimAbandoned(pubkey, claim) => {
+                    Command::ClaimAbandoned(pubkey, claim_bytes) => {
+                        let claim = Claim::from_bytes(&claim_bytes);
                         blockchain_network_state.abandoned_claim(claim.hash.clone());
-                        if let Err(_) = miner_sender.send(Command::ClaimAbandoned(pubkey, claim)) {
+                        if let Err(_) =
+                            miner_sender.send(Command::ClaimAbandoned(pubkey, claim_bytes))
+                        {
                             info!("Error sending claim abandoned command to miner");
                         }
                         if let Err(e) = miner_sender.send(Command::StateUpdateCompleted(
-                            blockchain_network_state.clone(),
+                            blockchain_network_state.clone().as_bytes(),
                         )) {
                             info!("Error sending updated network state to miner: {:?}", e);
                         }
@@ -761,7 +744,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             let block = miner.mine();
                                             if let Some(block) = block {
                                                 let message = MessageType::BlockMessage {
-                                                    block: block.clone(),
+                                                    block: block.clone().as_bytes(),
                                                     sender_id: node_id.clone().to_string(),
                                                 };
 
@@ -775,7 +758,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                                 if let Err(_) =
                                                     blockchain_sender.send(Command::PendingBlock(
-                                                        block.clone(),
+                                                        block.clone().as_bytes(),
                                                         node_id.clone().to_string(),
                                                     ))
                                                 {
@@ -815,7 +798,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
-                    Command::ConfirmedBlock(block) => {
+                    Command::ConfirmedBlock(block_bytes) => {
+                        let block = block::Block::from_bytes(&block_bytes);
                         miner.current_nonce_timer = block.header.timestamp;
 
                         if let Category::Motherlode(_) = block.header.block_reward.category {
@@ -850,11 +834,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             info!("Error sending updated miner to app")
                         }
                     }
-                    Command::ProcessTxn(txn) => {
+                    Command::ProcessTxn(txn_bytes) => {
+                        let txn = Txn::from_bytes(&txn_bytes);
                         let txn_validator = miner.process_txn(txn.clone());
                         miner.check_confirmed(txn.txn_id.clone());
                         let message = MessageType::TxnValidatorMessage {
-                            txn_validator,
+                            txn_validator: txn_validator.as_bytes(),
                             sender_id: node_id.to_string().clone(),
                         };
                         if let Err(e) = miner_sender.send(Command::SendMessage(message.as_bytes()))
@@ -865,7 +850,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             info!("Error sending updated miner to app.")
                         }
                     }
-                    Command::ProcessClaim(claim) => {
+                    Command::ProcessClaim(claim_bytes) => {
+                        let claim = Claim::from_bytes(&claim_bytes);
                         miner
                             .claim_pool
                             .confirmed
@@ -874,7 +860,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             info!("Error sending updated miner to app")
                         }
                     }
-                    Command::ProcessTxnValidator(validator) => {
+                    Command::ProcessTxnValidator(validator_bytes) => {
+                        let validator = TxnValidator::from_bytes(&validator_bytes);
                         miner.process_txn_validator(validator.clone());
                         if let Some(bad_validators) =
                             miner.check_rejected(validator.txn.txn_id.clone())
@@ -904,7 +891,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             info!("Error sending mine block command to miner: {:?}", e);
                         }
                     }
-                    Command::StateUpdateCompleted(network_state) => {
+                    Command::StateUpdateCompleted(network_state_bytes) => {
+                        let network_state = NetworkState::from_bytes(&network_state_bytes);
                         miner.network_state = network_state.clone();
                         miner.claim_map = miner.network_state.get_claims();
                         miner.mining = true;
@@ -920,7 +908,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             miner.mining = false;
                             miner.last_block = Some(block.clone());
                             let message = MessageType::BlockMessage {
-                                block: block.clone(),
+                                block: block.clone().as_bytes(),
                                 sender_id: node_id.to_string().clone(),
                             };
 
@@ -930,7 +918,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 info!("Error sending SendMessage command to swarm: {:?}", e);
                             }
                             if let Err(_) = blockchain_sender.send(Command::PendingBlock(
-                                block.clone(),
+                                block.clone().as_bytes(),
                                 node_id.clone().to_string(),
                             )) {
                                 info!("Error sending to command receiver")
@@ -944,7 +932,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     Command::SendAddress => {
                         let message = MessageType::ClaimMessage {
-                            claim: miner.claim.clone(),
+                            claim: miner.claim.clone().as_bytes(),
                             sender_id: node_id.clone().to_string(),
                         };
 
@@ -958,11 +946,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Err(e) = blockchain_sender.send(Command::NonceUp) {
                             info!("Error sending NonceUp command to blockchain: {:?}", e);
                         }
-                        if let Err(e) = miner_sender.send(Command::MineBlock) {
-                            info!("Error sending MineBlock command to miner: {:?}", e);
-                        }
                         if let Err(_) = app_sender.send(Command::UpdateAppMiner(miner.as_bytes())) {
                             info!("Error sending updated miner to app")
+                        }
+                        if let Err(e) = miner_sender.send(Command::MineBlock) {
+                            info!("Error sending MineBlock command to miner: {:?}", e);
                         }
                     }
                     Command::CheckAbandoned => {
@@ -980,7 +968,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                         if let Some((_, v)) = abandoned_claim_map.front() {
                                             let message = MessageType::ClaimAbandonedMessage {
-                                                claim: v.clone(),
+                                                claim: v.clone().as_bytes(),
                                                 sender_id: miner.claim.pubkey.clone(),
                                             };
 
@@ -1006,7 +994,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 if let Err(e) =
                                                     blockchain_sender.send(Command::ClaimAbandoned(
                                                         miner.claim.pubkey.clone(),
-                                                        v.clone(),
+                                                        v.clone().as_bytes(),
                                                     ))
                                                 {
                                                     info!("Error forwarding confirmed abandoned claim to blockchain: {:?}", e);
@@ -1022,11 +1010,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
-                    Command::ClaimAbandoned(pubkey, claim) => {
-                        if let Some(_) = miner.claim_map.get(&pubkey) {
+                    Command::ClaimAbandoned(pubkey, _) => {
+                        if let Some(claim) = miner.claim_map.clone().get(&pubkey) {
                             miner
                                 .abandoned_claim_counter
                                 .insert(pubkey.clone(), claim.clone());
+
                             let mut abandoned_claim_map = miner.abandoned_claim_counter.clone();
                             abandoned_claim_map.retain(|_, v| v.hash == claim.hash);
 
@@ -1057,7 +1046,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //____________________________________________________________________________________________________
     let state_to_swarm_sender = to_swarm_sender.clone();
     let state_to_blockchain_sender = to_blockchain_sender.clone();
-    let mut state_chunk_cache = LinkedHashMap::new();
+    let mut state_chunk_cache: LinkedHashMap<u128, Vec<u8>> = LinkedHashMap::new();
     std::thread::spawn(move || loop {
         let blockchain_sender = state_to_blockchain_sender.clone();
         let swarm_sender = state_to_swarm_sender.clone();
@@ -1075,47 +1064,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Command::RequestedComponents(requestor, components) => {
                     info!("Sending state components");
-                    if let Some(chunks) = components.chunk() {
-                        let mut idx = 0;
-                        let total_chunks = chunks.clone().len() as u32;
-                        for chunk in chunks {
-                            let message = MessageType::StateComponentChunkMessage {
-                                data: chunk,
-                                chunk_number: idx + 1,
-                                total_chunks,
-                                requestor: requestor.clone(),
-                                sender_id: node_id.clone().to_string(),
-                            };
+                    let message = MessageType::StateComponentsMessage {
+                        data: components,
+                        requestor: requestor.clone(),
+                        sender_id: node_id.clone().to_string(),
+                    };
 
-                            idx += 1;
-
-                            if let Err(e) =
-                                swarm_sender.send(Command::SendMessage(message.as_bytes()))
-                            {
-                                info!("Error sending to swarm sender: {:?}", e);
-                            }
-                        }
+                    if let Err(e) = swarm_sender.send(Command::SendMessage(message.as_bytes())) {
+                        info!("Error sending to swarm sender: {:?}", e);
                     }
                 }
-                Command::StoreStateComponentChunk(data, chunk_number, total_chunks) => {
-                    if chunk_number == total_chunks {
-                        state_chunk_cache.insert(chunk_number, data);
-                        let mut component_bytes = vec![];
-                        state_chunk_cache.iter().for_each(|(_, v)| {
-                            component_bytes.extend(v);
-                        });
-
-                        let components = Components::from_bytes(&component_bytes);
-                        if let Err(e) =
-                            blockchain_sender.send(Command::StateUpdateComponents(components))
-                        {
-                            info!(
-                                "Error sending state update componetns to blockchain thread: {:?}",
-                                e
-                            );
-                        }
-                    } else {
-                        state_chunk_cache.insert(chunk_number, data);
+                Command::StoreStateComponents(data) => {
+                    let components = Components::from_bytes(&data);
+                    if let Err(e) = blockchain_sender.send(Command::StateUpdateComponents(data)) {
+                        info!(
+                            "Error sending state update componetns to blockchain thread: {:?}",
+                            e
+                        );
                     }
                 }
                 Command::ConfirmedBlock(_) => {
@@ -1895,7 +1860,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             wallet.clone().send_txn(addr_num, receiver, amount);
                                         if let Ok(txn) = txn {
                                             let message = MessageType::TxnMessage {
-                                                txn,
+                                                txn: txn.as_bytes(),
                                                 sender_id: node_id.to_string().clone(),
                                             };
                                             if let Err(e) = swarm_sender
