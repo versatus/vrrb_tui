@@ -299,14 +299,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 data: addr.clone(),
                 pubkey: "0x123456789".to_string(),
             };
-
+            info!("Sending identify message to bootstrap node");
             let packets = message.into_message().as_packet_bytes();
 
             packets.iter().for_each(|packet| {
-                if let Err(e) = gossip_service.sock.send_to(packet, socket_addr) {
+                if let Err(e) = gossip_service.sock.send_to(packet, socket_addr.clone()) {
                     info!("Error sending identify message to bootstrap node: {:?}", e);
                 }
             });
+
+            gossip_service.known_peers.insert(socket_addr, "abcdefg".to_string());
         }
     }
     //____________________________________________________________________________________________________
