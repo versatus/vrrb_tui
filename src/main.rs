@@ -131,6 +131,7 @@ impl Default for App {
     }
 }
 
+#[allow(unused_variables, unused_mut)]
 #[async_std::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     enable_raw_mode().expect("can run in raw mode");
@@ -271,7 +272,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut node = Node::new(node_type.clone(), command_handler, to_message_handler);
     let node_id = node.id.clone();
-    let node_key = node.key.clone();
+    let node_key = node.pubkey.clone();
     //____________________________________________________________________________________________________
 
     //____________________________________________________________________________________________________
@@ -340,6 +341,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let blockchain_to_blockchain_sender = to_blockchain_sender.clone();
     let blockchain_to_state_sender = to_state_sender.clone();
     let blockchain_to_app_sender = to_app_sender.clone();
+    let blockchain_node_id = node_id.clone();
     std::thread::spawn(move || {
         let mut rng = rand::thread_rng();
         let file_suffix: u32 = rng.gen();
@@ -390,7 +392,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 let component = StateComponent::All;
 
                                                 let message = MessageType::GetNetworkStateMessage {
-                                                    sender_id: node_id.clone().to_string(),
+                                                    sender_id: blockchain_node_id.clone(),
                                                     requested_from: sender_id,
                                                     requestor_node_type: node_type
                                                         .clone()
@@ -424,7 +426,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             {
                                                 let component = StateComponent::All;
                                                 let message = MessageType::GetNetworkStateMessage {
-                                                    sender_id: node_id.clone().to_string(),
+                                                    sender_id: blockchain_node_id.clone(),
                                                     requested_from: sender_id,
                                                     requestor_node_type: node_type
                                                         .clone()
@@ -446,7 +448,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     block_height: block.header.block_height,
                                                     reason: e.details.as_bytes(),
                                                     miner_id: sender_id,
-                                                    sender_id: node_id.clone().to_string(),
+                                                    sender_id: blockchain_node_id.clone(),
                                                 };
                                                 if let Err(e) = swarm_sender
                                                     .send(Command::SendMessage(message.as_bytes()))
@@ -699,6 +701,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let miner_to_blockchain_sender = to_blockchain_sender.clone();
     let miner_to_swarm_sender = to_swarm_sender.clone();
     let miner_to_app_sender = to_app_sender.clone();
+    let miner_node_id = node_id.clone();
     std::thread::spawn(move || {
         let mut miner = Miner::start(
             mining_wallet.clone().get_secretkey(),
@@ -747,7 +750,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             if let Some(block) = block {
                                                 let message = MessageType::BlockMessage {
                                                     block: block.clone().as_bytes(),
-                                                    sender_id: node_id.clone().to_string(),
+                                                    sender_id: miner_node_id.clone().to_string(),
                                                 };
 
                                                 miner.mining = false;
@@ -761,7 +764,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 if let Err(_) =
                                                     blockchain_sender.send(Command::PendingBlock(
                                                         block.clone().as_bytes(),
-                                                        node_id.clone().to_string(),
+                                                        miner_node_id.clone().to_string(),
                                                     ))
                                                 {
                                                     info!("Error sending PendingBlock command to blockchain");
@@ -842,7 +845,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         miner.check_confirmed(txn.txn_id.clone());
                         let message = MessageType::TxnValidatorMessage {
                             txn_validator: txn_validator.as_bytes(),
-                            sender_id: node_id.to_string().clone(),
+                            sender_id: miner_node_id.clone(),
                         };
                         if let Err(e) = miner_sender.send(Command::SendMessage(message.as_bytes()))
                         {
@@ -911,7 +914,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             miner.last_block = Some(block.clone());
                             let message = MessageType::BlockMessage {
                                 block: block.clone().as_bytes(),
-                                sender_id: node_id.to_string().clone(),
+                                sender_id: miner_node_id.clone(),
                             };
 
                             if let Err(e) =
@@ -921,7 +924,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             if let Err(_) = blockchain_sender.send(Command::PendingBlock(
                                 block.clone().as_bytes(),
-                                node_id.clone().to_string(),
+                                miner_node_id.clone(),
                             )) {
                                 info!("Error sending to command receiver")
                             }
@@ -935,7 +938,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Command::SendAddress => {
                         let message = MessageType::ClaimMessage {
                             claim: miner.claim.clone().as_bytes(),
-                            sender_id: node_id.clone().to_string(),
+                            sender_id: miner_node_id.clone(),
                         };
 
                         if let Err(e) = miner_sender.send(Command::SendMessage(message.as_bytes()))
@@ -971,7 +974,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         if let Some((_, v)) = abandoned_claim_map.front() {
                                             let message = MessageType::ClaimAbandonedMessage {
                                                 claim: v.clone().as_bytes(),
-                                                sender_id: miner.claim.pubkey.clone(),
+                                                sender_id: miner_node_id.clone(),
                                             };
 
                                             miner
@@ -1049,6 +1052,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state_to_swarm_sender = to_swarm_sender.clone();
     let state_to_blockchain_sender = to_blockchain_sender.clone();
     let mut state_chunk_cache: LinkedHashMap<u128, Vec<u8>> = LinkedHashMap::new();
+    let state_node_id = node_id.clone();
     std::thread::spawn(move || loop {
         let blockchain_sender = state_to_blockchain_sender.clone();
         let swarm_sender = state_to_swarm_sender.clone();
@@ -1069,7 +1073,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let message = MessageType::StateComponentsMessage {
                         data: components,
                         requestor: requestor.clone(),
-                        sender_id: node_id.clone().to_string(),
+                        sender_id: state_node_id.clone(),
                     };
 
                     if let Err(e) = swarm_sender.send(Command::SendMessage(message.as_bytes())) {
@@ -1094,6 +1098,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let terminal_to_swarm_sender = to_swarm_sender.clone();
+    let terminal_node_id = node_id.clone();
     loop {
         let swarm_sender = terminal_to_swarm_sender.clone();
         terminal.draw(|rect| {
@@ -1863,7 +1868,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         if let Ok(txn) = txn {
                                             let message = MessageType::TxnMessage {
                                                 txn: txn.as_bytes(),
-                                                sender_id: node_id.to_string().clone(),
+                                                sender_id: terminal_node_id.clone(),
                                             };
                                             if let Err(e) = swarm_sender
                                                 .send(Command::SendMessage(message.as_bytes()))
