@@ -298,7 +298,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .expect("Unable to parse socket address");
             let message = MessageType::Identify {
                 data: addr.clone(),
-                pubkey: "0x123456789".to_string(),
+                pubkey: gossip_service.pubkey.to_string().clone(),
             };
             info!("Sending identify message to bootstrap node");
             let packets = message.into_message().as_packet_bytes();
