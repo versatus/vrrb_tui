@@ -278,7 +278,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //____________________________________________________________________________________________________
     // Swarm initialization
     // Need to replace swarm with custom swarm-like struct.
-    let gossipsub_config = gossipsub::gossip::GossipServiceConfig::default();
+    let pub_ip = public_ip::addr_v4().await;
+    let first_port = 19292;
+    let addr = format!("{:?}:{:?}", pub_ip.clone().unwrap(), first_port.clone());
+    let mut gossipsub_config = gossipsub::gossip::GossipServiceConfig::default();
+    gossipsub_config.set_public_addr(Some(addr.clone()));
     let mut gossip_service =
         gossipsub::gossip::GossipService::from_config(gossipsub_config, to_swarm_receiver, to_message_sender.clone());
 
@@ -286,10 +290,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     //____________________________________________________________________________________________________
     // Dial peer if provided
-    let pub_ip = public_ip::addr_v4().await;
-    let first_port = 19292;
-    let addr = format!("{:?}:{:?}", pub_ip.clone().unwrap(), first_port.clone());
-
     if let Some(to_dial) = std::env::args().nth(1) {
         if to_dial != "None".to_string() {
             let socket_addr: SocketAddr = to_dial
