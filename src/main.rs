@@ -308,8 +308,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     info!("Error sending identify message to bootstrap node: {:?}", e);
                 }
             });
-
-            gossip_service.known_peers.insert(socket_addr, "abcdefg".to_string());
         }
     }
     //____________________________________________________________________________________________________
