@@ -4,13 +4,15 @@ use crossterm::{
     event::{self, Event as CEvent, KeyCode, KeyModifiers},
     terminal::{disable_raw_mode, enable_raw_mode},
 };
-use public_ip;
-use gossipsub::message_types::MessageType;
 use log::info;
+use messages::message::AsMessage;
+use messages::message_types::MessageType;
+use messages::packet::Packetize;
 use network::components::StateComponent;
 use network::protocol::{write_to_json, VrrbNetworkEvent};
 use node::handler::{CommandHandler, MessageHandler};
 use node::node::{Node, NodeAuth};
+use public_ip;
 use rand::Rng;
 use ritelinked::LinkedHashMap;
 use simplelog::{Config, LevelFilter, WriteLogger};
@@ -29,8 +31,6 @@ use tui::{
 };
 use tui_lib::helpers::*;
 use unicode_width::UnicodeWidthStr;
-use gossipsub::message::AsMessage;
-use gossipsub::packet::Packetize;
 use vrrb_lib::{
     block,
     blockchain::{Blockchain, InvalidBlockErrorReason},
@@ -232,7 +232,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // setup message and command sender/receiver channels for communication betwen various threads
     let (to_blockchain_sender, mut to_blockchain_receiver) = mpsc::unbounded_channel();
     let (to_miner_sender, mut to_miner_receiver) = mpsc::unbounded_channel();
-    let (to_message_sender, to_message_receiver) = mpsc::unbounded_channel();
+    let (to_message_sender, mut to_message_receiver) = mpsc::unbounded_channel();
     let (from_message_sender, mut from_message_receiver) = mpsc::unbounded_channel();
     let (command_sender, command_receiver) = mpsc::unbounded_channel();
     let (to_swarm_sender, mut to_swarm_receiver) = mpsc::unbounded_channel();
@@ -260,8 +260,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //____________________________________________________________________________________________________
     // Node initialization
     let to_message_handler = MessageHandler::new(from_message_sender.clone(), to_message_receiver);
-    let from_message_handler =
-        MessageHandler::new(to_message_sender.clone(), from_message_receiver);
     let command_handler = CommandHandler::new(
         to_miner_sender.clone(),
         to_blockchain_sender.clone(),
@@ -283,8 +281,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = format!("{:?}:{:?}", pub_ip.clone().unwrap(), first_port.clone());
     let mut gossipsub_config = gossipsub::gossip::GossipServiceConfig::default();
     gossipsub_config.set_public_addr(Some(addr.clone()));
-    let mut gossip_service =
-        gossipsub::gossip::GossipService::from_config(gossipsub_config, to_swarm_receiver, to_message_sender.clone());
+    let mut gossip_service = gossipsub::gossip::GossipService::from_config(
+        gossipsub_config,
+        to_swarm_receiver,
+        to_message_sender.clone(),
+        events_path.clone(),
+    );
 
     //____________________________________________________________________________________________________
 
@@ -301,10 +303,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 pubkey: gossip_service.pubkey.to_string().clone(),
             };
             info!("Sending identify message to bootstrap node");
+            gossip_service
+                .sock
+                .sock
+                .set_ttl(255)
+                .expect("Cannot set ttl on socket");
             let packets = message.into_message().as_packet_bytes();
 
             packets.iter().for_each(|packet| {
-                if let Err(e) = gossip_service.sock.send_to(packet, socket_addr.clone()) {
+                if let Err(e) = gossip_service
+                    .sock
+                    .sock
+                    .send_to(packet, socket_addr.clone())
+                {
                     info!("Error sending identify message to bootstrap node: {:?}", e);
                 }
             });
@@ -314,9 +325,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //____________________________________________________________________________________________________
     // Swarm event thread
 
-    std::thread::spawn(move || {
-        gossip_service.start()
-    });
+    std::thread::spawn(move || gossip_service.start());
 
     //____________________________________________________________________________________________________
 
@@ -532,9 +541,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     archive: None,
                                 };
 
-                                if let Err(e) = state_sender
-                                    .send(Command::RequestedComponents(requestor, components.as_bytes()))
-                                {
+                                if let Err(e) = state_sender.send(Command::RequestedComponents(
+                                    requestor,
+                                    components.as_bytes(),
+                                )) {
                                     info!(
                                         "Error sending requested components to state receiver: {:?}",
                                         e
@@ -1074,7 +1084,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         sender_id: state_node_id.clone(),
                     };
 
-                    if let Err(e) = swarm_sender.send(Command::SendMessage(message.as_bytes())) {
+                    if let Err(e) = swarm_sender
+                        .send(Command::SendStateComponents(requestor, message.as_bytes()))
+                    {
                         info!("Error sending to swarm sender: {:?}", e);
                     }
                 }
