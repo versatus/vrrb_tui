@@ -50,3 +50,4 @@ network = { path = "../network" }
 node = { path = "../node" }
 commands = { path = "../commands" }
 messages = { path = "../messages" }
+events = { path = "../events" }

@@ -9,7 +9,7 @@ use messages::message::AsMessage;
 use messages::message_types::MessageType;
 use messages::packet::Packetize;
 use network::components::StateComponent;
-use network::protocol::{write_to_json, VrrbNetworkEvent};
+use events::events::{write_to_json, VrrbNetworkEvent};
 use node::handler::{CommandHandler, MessageHandler};
 use node::node::{Node, NodeAuth};
 use public_ip;
@@ -182,7 +182,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let menu_titles: Vec<_> = vec!["Home", "Wallet", "Mining", "Network", "ChainData"];
     let events_path = format!("{}/events_{}.json", directory.clone(), event_file_suffix);
     fs::File::create(events_path.clone()).unwrap();
-    if let Err(_) = write_to_json(events_path.clone(), &VrrbNetworkEvent::VrrbStarted) {
+    if let Err(_) = write_to_json(events_path.clone(), VrrbNetworkEvent::VrrbStarted) {
         info!("Error writting to json in main.rs 164");
     }
     let mut active_menu_item = MenuItem::Home;
@@ -234,6 +234,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (to_miner_sender, mut to_miner_receiver) = mpsc::unbounded_channel();
     let (to_message_sender, mut to_message_receiver) = mpsc::unbounded_channel();
     let (from_message_sender, mut from_message_receiver) = mpsc::unbounded_channel();
+    let (to_inbox_sender, mut to_inbox_receiver) = mpsc::unbounded_channel();
     let (command_sender, command_receiver) = mpsc::unbounded_channel();
     let (to_swarm_sender, mut to_swarm_receiver) = mpsc::unbounded_channel();
     let (to_state_sender, mut to_state_receiver) = mpsc::unbounded_channel();
@@ -285,6 +286,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         gossipsub_config,
         to_swarm_receiver,
         to_message_sender.clone(),
+        to_inbox_sender.clone(),
+        to_inbox_receiver,
         events_path.clone(),
     );
 
@@ -308,17 +311,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .sock
                 .set_ttl(255)
                 .expect("Cannot set ttl on socket");
-            let packets = message.into_message().as_packet_bytes();
-
+            let packets = message.into_message().into_packets();
             packets.iter().for_each(|packet| {
-                if let Err(e) = gossip_service
-                    .sock
-                    .sock
-                    .send_to(packet, socket_addr.clone())
-                {
-                    info!("Error sending identify message to bootstrap node: {:?}", e);
-                }
+                gossip_service.sock.send_reliable(&socket_addr, packet.clone());
             });
+            gossip_service.sock.maintain();
         }
     }
     //____________________________________________________________________________________________________
