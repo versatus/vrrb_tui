@@ -282,6 +282,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = format!("{:?}:{:?}", pub_ip.clone().unwrap(), first_port.clone());
     let mut gossipsub_config = gossipsub::gossip::GossipServiceConfig::default();
     gossipsub_config.set_public_addr(Some(addr.clone()));
+    info!("My public ip: {:?}", gossipsub_config.get_public_addr());
     let mut gossip_service = gossipsub::gossip::GossipService::from_config(
         gossipsub_config,
         to_swarm_receiver,
@@ -311,11 +312,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .sock
                 .set_ttl(255)
                 .expect("Cannot set ttl on socket");
-            let packets = message.into_message().into_packets();
+            let packets = message.into_message(1).into_packets();
             packets.iter().for_each(|packet| {
                 gossip_service.sock.send_reliable(&socket_addr, packet.clone());
             });
-            gossip_service.sock.maintain();
         }
     }
     //____________________________________________________________________________________________________

@@ -1,4 +1,4 @@
-use network::protocol::VrrbNetworkEvent;
+use events::events::VrrbNetworkEvent;
 use ritelinked::LinkedHashMap;
 use std::collections::LinkedList;
 use std::fs;
