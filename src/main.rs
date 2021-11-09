@@ -234,7 +234,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (to_miner_sender, mut to_miner_receiver) = mpsc::unbounded_channel();
     let (to_message_sender, mut to_message_receiver) = mpsc::unbounded_channel();
     let (from_message_sender, mut from_message_receiver) = mpsc::unbounded_channel();
-    let (to_inbox_sender, mut to_inbox_receiver) = mpsc::unbounded_channel();
     let (command_sender, command_receiver) = mpsc::unbounded_channel();
     let (to_swarm_sender, mut to_swarm_receiver) = mpsc::unbounded_channel();
     let (to_state_sender, mut to_state_receiver) = mpsc::unbounded_channel();
@@ -287,8 +286,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         gossipsub_config,
         to_swarm_receiver,
         to_message_sender.clone(),
-        to_inbox_sender.clone(),
-        to_inbox_receiver,
         events_path.clone(),
     );
 
@@ -309,12 +306,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             info!("Sending identify message to bootstrap node");
             gossip_service
                 .sock
-                .sock
                 .set_ttl(255)
                 .expect("Cannot set ttl on socket");
             let packets = message.into_message(1).into_packets();
             packets.iter().for_each(|packet| {
-                gossip_service.sock.send_reliable(&socket_addr, packet.clone());
+                gossip_service.gd_udp.send_reliable(&socket_addr, packet.clone(), &gossip_service.sock);
             });
         }
     }
