@@ -4,12 +4,12 @@ use crossterm::{
     event::{self, Event as CEvent, KeyCode, KeyModifiers},
     terminal::{disable_raw_mode, enable_raw_mode},
 };
+use events::events::{write_to_json, VrrbNetworkEvent};
 use log::info;
 use messages::message::AsMessage;
 use messages::message_types::MessageType;
 use messages::packet::Packetize;
 use network::components::StateComponent;
-use events::events::{write_to_json, VrrbNetworkEvent};
 use node::handler::{CommandHandler, MessageHandler};
 use node::node::{Node, NodeAuth};
 use public_ip;
@@ -234,6 +234,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (to_miner_sender, mut to_miner_receiver) = mpsc::unbounded_channel();
     let (to_message_sender, mut to_message_receiver) = mpsc::unbounded_channel();
     let (from_message_sender, mut from_message_receiver) = mpsc::unbounded_channel();
+    let (to_gossip_sender, mut to_gossip_receiver) = mpsc::unbounded_channel();
     let (command_sender, command_receiver) = mpsc::unbounded_channel();
     let (to_swarm_sender, mut to_swarm_receiver) = mpsc::unbounded_channel();
     let (to_state_sender, mut to_state_receiver) = mpsc::unbounded_channel();
@@ -263,6 +264,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let command_handler = CommandHandler::new(
         to_miner_sender.clone(),
         to_blockchain_sender.clone(),
+        to_gossip_sender.clone(),
         to_swarm_sender.clone(),
         to_state_sender.clone(),
         command_receiver,
@@ -286,6 +288,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         gossipsub_config,
         to_swarm_receiver,
         to_message_sender.clone(),
+        to_gossip_receiver,
         events_path.clone(),
     );
 
@@ -310,7 +313,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .expect("Cannot set ttl on socket");
             let packets = message.into_message(1).into_packets();
             packets.iter().for_each(|packet| {
-                gossip_service.gd_udp.send_reliable(&socket_addr, packet.clone(), &gossip_service.sock);
+                gossip_service.gd_udp.send_reliable(
+                    &socket_addr,
+                    packet.clone(),
+                    &gossip_service.sock,
+                );
             });
         }
     }
@@ -338,6 +345,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut blockchain_reward_state = reward_state.clone();
     let blockchain_to_miner_sender = to_miner_sender.clone();
     let blockchain_to_swarm_sender = to_swarm_sender.clone();
+    let blockchain_to_gossip_sender = to_gossip_sender.clone();
     let blockchain_to_blockchain_sender = to_blockchain_sender.clone();
     let blockchain_to_state_sender = to_state_sender.clone();
     let blockchain_to_app_sender = to_app_sender.clone();
@@ -355,6 +363,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         loop {
             let miner_sender = blockchain_to_miner_sender.clone();
             let swarm_sender = blockchain_to_swarm_sender.clone();
+            let gossip_sender = blockchain_to_gossip_sender.clone();
             let state_sender = blockchain_to_state_sender.clone();
             let blockchain_sender = blockchain_to_blockchain_sender.clone();
             let app_sender = blockchain_to_app_sender.clone();
@@ -401,7 +410,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     component: component.as_bytes(),
                                                 };
 
-                                                if let Err(e) = swarm_sender
+                                                if let Err(e) = gossip_sender
                                                     .send(Command::SendMessage(message.as_bytes()))
                                                 {
                                                     info!("Error sending state update request to swarm sender: {:?}", e);
@@ -435,7 +444,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     component: component.as_bytes(),
                                                 };
 
-                                                if let Err(e) = swarm_sender
+                                                if let Err(e) = gossip_sender
                                                     .send(Command::SendMessage(message.as_bytes()))
                                                 {
                                                     info!("Error sending state update request to swarm sender: {:?}", e);
@@ -450,7 +459,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     miner_id: sender_id,
                                                     sender_id: blockchain_node_id.clone(),
                                                 };
-                                                if let Err(e) = swarm_sender
+                                                if let Err(e) = gossip_sender
                                                     .send(Command::SendMessage(message.as_bytes()))
                                                 {
                                                     info!("Error sending state update request to swarm sender: {:?}", e);
@@ -701,6 +710,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let miner_to_miner_sender = to_miner_sender.clone();
     let miner_to_blockchain_sender = to_blockchain_sender.clone();
     let miner_to_swarm_sender = to_swarm_sender.clone();
+    let miner_to_gossip_sender = to_gossip_sender.clone();
     let miner_to_app_sender = to_app_sender.clone();
     let miner_node_id = node_id.clone();
     std::thread::spawn(move || {
@@ -721,12 +731,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         loop {
             let blockchain_sender = miner_to_blockchain_sender.clone();
             let swarm_sender = miner_to_swarm_sender.clone();
+            let gossip_sender = miner_to_gossip_sender.clone();
             let miner_sender = miner_to_miner_sender.clone();
             let app_sender = miner_to_app_sender.clone();
             if let Ok(command) = to_miner_receiver.try_recv() {
                 match command {
                     Command::SendMessage(message) => {
-                        if let Err(e) = swarm_sender.send(Command::SendMessage(message)) {
+                        if let Err(e) = gossip_sender.send(Command::SendMessage(message)) {
                             info!("Error sending to swarm receiver: {:?}", e);
                         }
                     }
@@ -756,7 +767,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                                 miner.mining = false;
 
-                                                if let Err(e) = swarm_sender
+                                                if let Err(e) = gossip_sender
                                                     .send(Command::SendMessage(message.as_bytes()))
                                                 {
                                                     info!("Error sending SendMessage command to swarm: {:?}", e);
@@ -848,7 +859,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             txn_validator: txn_validator.as_bytes(),
                             sender_id: miner_node_id.clone(),
                         };
-                        if let Err(e) = miner_sender.send(Command::SendMessage(message.as_bytes()))
+                        if let Err(e) = gossip_sender.send(Command::SendMessage(message.as_bytes()))
                         {
                             info!("Error sending SendMessage command to swarm: {:?}", e);
                         }
@@ -919,7 +930,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             };
 
                             if let Err(e) =
-                                miner_sender.send(Command::SendMessage(message.as_bytes()))
+                                gossip_sender.send(Command::SendMessage(message.as_bytes()))
                             {
                                 info!("Error sending SendMessage command to swarm: {:?}", e);
                             }
@@ -942,7 +953,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             sender_id: miner_node_id.clone(),
                         };
 
-                        if let Err(e) = miner_sender.send(Command::SendMessage(message.as_bytes()))
+                        if let Err(e) = gossip_sender.send(Command::SendMessage(message.as_bytes()))
                         {
                             info!("Error sending SendMessage command to swarm: {:?}", e);
                         }
@@ -981,7 +992,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             miner
                                                 .abandoned_claim_counter
                                                 .insert(miner.claim.pubkey.clone(), v.clone());
-                                            if let Err(e) = swarm_sender
+                                            if let Err(e) = gossip_sender
                                                 .send(Command::SendMessage(message.as_bytes()))
                                             {
                                                 info!("Error sending ClaimAbandoned message to swarm: {:?}", e);
@@ -1101,9 +1112,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let terminal_to_swarm_sender = to_swarm_sender.clone();
+    let terminal_to_gossip_sender = to_gossip_sender.clone();
     let terminal_node_id = node_id.clone();
     loop {
         let swarm_sender = terminal_to_swarm_sender.clone();
+        let gossip_sender = terminal_to_gossip_sender.clone();
         terminal.draw(|rect| {
             if let Ok(command) = to_app_receiver.try_recv() {
                 match command {
@@ -1873,7 +1886,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 txn: txn.as_bytes(),
                                                 sender_id: terminal_node_id.clone(),
                                             };
-                                            if let Err(e) = swarm_sender
+                                            if let Err(e) = gossip_sender
                                                 .send(Command::SendMessage(message.as_bytes()))
                                             {
                                                 info!("Error sending to command receiver: {:?}", e);
