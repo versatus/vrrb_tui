@@ -51,3 +51,4 @@ node = { path = "../node" }
 commands = { path = "../commands" }
 messages = { path = "../messages" }
 events = { path = "../events" }
+gd_udp = { path = "../gd_udp" }

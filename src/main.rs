@@ -8,6 +8,7 @@ use events::events::{write_to_json, VrrbNetworkEvent};
 use log::info;
 use messages::message::AsMessage;
 use messages::message_types::MessageType;
+use messages::packet::Packet;
 use messages::packet::Packetize;
 use network::components::StateComponent;
 use node::handler::{CommandHandler, MessageHandler};
@@ -42,6 +43,7 @@ use vrrb_lib::{
     validator::TxnValidator,
     wallet::WalletAccount,
 };
+use gd_udp::gd_udp::GDUdp;
 
 pub const VALIDATOR_THRESHOLD: f64 = 0.60;
 
@@ -286,9 +288,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("My public ip: {:?}", gossipsub_config.get_public_addr());
     let mut gossip_service = gossipsub::gossip::GossipService::from_config(
         gossipsub_config,
-        to_swarm_receiver,
         to_message_sender.clone(),
-        to_gossip_receiver,
         events_path.clone(),
     );
 
@@ -325,7 +325,69 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //____________________________________________________________________________________________________
     // Swarm event thread
 
-    std::thread::spawn(move || gossip_service.start());
+    let mut thread_gd_udp = gossip_service.gd_udp.clone();
+    std::thread::spawn(move || {
+        let thread_sock = gossip_service
+            .sock
+            .try_clone()
+            .expect("Unable to clone socket");
+        let thread_to_node_sender = gossip_service.to_node_sender.clone();
+        std::thread::spawn(move || {
+            loop {
+                if let Ok(command) = to_gossip_receiver.try_recv() {
+                    match command {
+                        Command::SendMessage(message) => {
+                            info!("Sending message");
+                            gossip_service
+                                .known_peers
+                                .clone()
+                                .iter()
+                                .for_each(|(addr, _)| {
+                                    message.into_message(1).into_packets().iter().for_each(
+                                        |packet| {
+                                            gossip_service.gd_udp.send_reliable(
+                                                &addr,
+                                                packet.clone(),
+                                                &gossip_service.sock,
+                                            )
+                                        },
+                                    )
+                                }
+                            );
+
+                        }
+                        _ => {}
+                    }
+                }
+                if let Ok(command) = to_swarm_receiver.try_recv() {
+                    gossip_service.process_gossip_command(command);
+                }
+                gossip_service
+                    .gd_udp
+                    .check_time_elapsed(&gossip_service.sock);
+            }
+        });
+        loop {
+            let mut buf = [0; 50000];
+            let (amt, src) = thread_sock.recv_from(&mut buf).expect("No data received");
+            if amt > 0 {
+                let packet = Packet::from_bytes(&buf[..amt]);
+                if packet.return_receipt == GDUdp::RETURN_RECEIPT {
+                    let id = String::from_utf8_lossy(&packet.id).to_string();
+                    let packet_number = usize::from_be_bytes(packet.clone().convert_packet_number()) as u32;
+                    let message = MessageType::AckMessage {
+                        packet_id: id,
+                        packet_number,
+                        src: src.to_string(),
+                    };
+                    thread_gd_udp.ack(&thread_sock, &src, message)                    
+                }
+                if let Err(e) = thread_to_node_sender.send((packet, src)) {
+                    info!("Error sending packet to inbox");
+                }
+            }
+        }
+    });
 
     //____________________________________________________________________________________________________
 
@@ -411,7 +473,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 };
 
                                                 if let Err(e) = gossip_sender
-                                                    .send(Command::SendMessage(message.as_bytes()))
+                                                    .send(Command::SendMessage(message))
                                                 {
                                                     info!("Error sending state update request to swarm sender: {:?}", e);
                                                 };
@@ -445,7 +507,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 };
 
                                                 if let Err(e) = gossip_sender
-                                                    .send(Command::SendMessage(message.as_bytes()))
+                                                    .send(Command::SendMessage(message))
                                                 {
                                                     info!("Error sending state update request to swarm sender: {:?}", e);
                                                 };
@@ -460,7 +522,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     sender_id: blockchain_node_id.clone(),
                                                 };
                                                 if let Err(e) = gossip_sender
-                                                    .send(Command::SendMessage(message.as_bytes()))
+                                                    .send(Command::SendMessage(message))
                                                 {
                                                     info!("Error sending state update request to swarm sender: {:?}", e);
                                                 };
@@ -768,7 +830,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 miner.mining = false;
 
                                                 if let Err(e) = gossip_sender
-                                                    .send(Command::SendMessage(message.as_bytes()))
+                                                    .send(Command::SendMessage(message))
                                                 {
                                                     info!("Error sending SendMessage command to swarm: {:?}", e);
                                                 }
@@ -859,8 +921,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             txn_validator: txn_validator.as_bytes(),
                             sender_id: miner_node_id.clone(),
                         };
-                        if let Err(e) = gossip_sender.send(Command::SendMessage(message.as_bytes()))
-                        {
+                        if let Err(e) = gossip_sender.send(Command::SendMessage(message)) {
                             info!("Error sending SendMessage command to swarm: {:?}", e);
                         }
                         if let Err(_) = app_sender.send(Command::UpdateAppMiner(miner.as_bytes())) {
@@ -929,9 +990,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 sender_id: miner_node_id.clone(),
                             };
 
-                            if let Err(e) =
-                                gossip_sender.send(Command::SendMessage(message.as_bytes()))
-                            {
+                            if let Err(e) = gossip_sender.send(Command::SendMessage(message)) {
                                 info!("Error sending SendMessage command to swarm: {:?}", e);
                             }
                             if let Err(_) = blockchain_sender.send(Command::PendingBlock(
@@ -953,8 +1012,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             sender_id: miner_node_id.clone(),
                         };
 
-                        if let Err(e) = gossip_sender.send(Command::SendMessage(message.as_bytes()))
-                        {
+                        if let Err(e) = gossip_sender.send(Command::SendMessage(message)) {
                             info!("Error sending SendMessage command to swarm: {:?}", e);
                         }
                     }
@@ -992,8 +1050,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             miner
                                                 .abandoned_claim_counter
                                                 .insert(miner.claim.pubkey.clone(), v.clone());
-                                            if let Err(e) = gossip_sender
-                                                .send(Command::SendMessage(message.as_bytes()))
+                                            if let Err(e) =
+                                                gossip_sender.send(Command::SendMessage(message))
                                             {
                                                 info!("Error sending ClaimAbandoned message to swarm: {:?}", e);
                                             }
@@ -1886,8 +1944,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 txn: txn.as_bytes(),
                                                 sender_id: terminal_node_id.clone(),
                                             };
-                                            if let Err(e) = gossip_sender
-                                                .send(Command::SendMessage(message.as_bytes()))
+                                            if let Err(e) =
+                                                gossip_sender.send(Command::SendMessage(message))
                                             {
                                                 info!("Error sending to command receiver: {:?}", e);
                                             };
