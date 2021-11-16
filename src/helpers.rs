@@ -10,15 +10,15 @@ use tui::{
     text::{Span, Spans},
     widgets::{Block, BorderType, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Table},
 };
-use vrrb_lib::block;
-use vrrb_lib::claim::Claim;
-use vrrb_lib::header::BlockHeader;
-use vrrb_lib::pool::Pool;
-use vrrb_lib::reward::RewardState;
-use vrrb_lib::state::Ledger;
-use vrrb_lib::state::NetworkState;
-use vrrb_lib::txn::Txn;
-use vrrb_lib::wallet::WalletAccount;
+use block::block;
+use claim::claim::Claim;
+use ::block::header::BlockHeader;
+use pool::pool::Pool;
+use reward::reward::RewardState;
+use ledger::ledger::Ledger;
+use state::state::NetworkState;
+use txn::txn::Txn;
+use wallet::wallet::WalletAccount;
 
 #[derive(Error, Debug)]
 pub enum JsonError {
@@ -1218,11 +1218,11 @@ pub fn render_empty_list<'a>() -> List<'a> {
     List::new(vec![ListItem::new(Spans::from(vec![Span::raw("")]))])
 }
 
-pub fn get_credits(ledger: &Ledger) -> LinkedHashMap<String, u128> {
+pub fn get_credits(ledger: &Ledger<Claim>) -> LinkedHashMap<String, u128> {
     ledger.credits.clone()
 }
 
-pub fn get_debits(ledger: &Ledger) -> LinkedHashMap<String, u128> {
+pub fn get_debits(ledger: &Ledger<Claim>) -> LinkedHashMap<String, u128> {
     ledger.debits.clone()
 }
 
