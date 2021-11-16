@@ -1,3 +1,7 @@
+use ::block::invalid::InvalidBlockErrorReason;
+use block::block;
+use blockchain::blockchain::Blockchain;
+use claim::claim::Claim;
 use clipboard::{ClipboardContext, ClipboardProvider};
 use commands::command::Command;
 use crossterm::{
@@ -5,18 +9,23 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode},
 };
 use events::events::{write_to_json, VrrbNetworkEvent};
+use gd_udp::gd_udp::GDUdp;
+use ledger::ledger::Ledger;
 use log::info;
 use messages::message::AsMessage;
 use messages::message_types::MessageType;
 use messages::packet::Packet;
 use messages::packet::Packetize;
+use miner::miner::Miner;
 use network::components::StateComponent;
 use node::handler::{CommandHandler, MessageHandler};
 use node::node::{Node, NodeAuth};
 use public_ip;
 use rand::Rng;
+use reward::reward::{Category, RewardState};
 use ritelinked::LinkedHashMap;
 use simplelog::{Config, LevelFilter, WriteLogger};
+use state::state::{Components, NetworkState};
 use std::fs;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
@@ -31,19 +40,10 @@ use tui::{
     Terminal,
 };
 use tui_lib::helpers::*;
+use txn::txn::Txn;
 use unicode_width::UnicodeWidthStr;
-use vrrb_lib::{
-    block,
-    blockchain::{Blockchain, InvalidBlockErrorReason},
-    claim::Claim,
-    miner::Miner,
-    reward::{Category, RewardState},
-    state::{Components, Ledger, NetworkState},
-    txn::Txn,
-    validator::TxnValidator,
-    wallet::WalletAccount,
-};
-use gd_udp::gd_udp::GDUdp;
+use validator::validator::TxnValidator;
+use wallet::wallet::WalletAccount;
 
 pub const VALIDATOR_THRESHOLD: f64 = 0.60;
 
@@ -257,7 +257,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         format!("{}/test_{}.json", directory.clone(), file_suffix)
     };
 
-    let network_state = NetworkState::restore(&path);
+    let mut network_state = NetworkState::restore(&path);
+    let ledger = Ledger::new();
+    network_state.set_ledger(ledger.as_bytes());
     let reward_state = RewardState::start();
 
     //____________________________________________________________________________________________________
@@ -332,40 +334,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .try_clone()
             .expect("Unable to clone socket");
         let thread_to_node_sender = gossip_service.to_node_sender.clone();
-        std::thread::spawn(move || {
-            loop {
-                if let Ok(command) = to_gossip_receiver.try_recv() {
-                    match command {
-                        Command::SendMessage(message) => {
-                            info!("Sending message");
-                            gossip_service
-                                .known_peers
-                                .clone()
-                                .iter()
-                                .for_each(|(addr, _)| {
-                                    message.into_message(1).into_packets().iter().for_each(
-                                        |packet| {
-                                            gossip_service.gd_udp.send_reliable(
-                                                &addr,
-                                                packet.clone(),
-                                                &gossip_service.sock,
-                                            )
-                                        },
-                                    )
-                                }
-                            );
-
-                        }
-                        _ => {}
+        std::thread::spawn(move || loop {
+            if let Ok(command) = to_gossip_receiver.try_recv() {
+                match command {
+                    Command::SendMessage(message) => {
+                        info!("Sending message");
+                        gossip_service
+                            .known_peers
+                            .clone()
+                            .iter()
+                            .for_each(|(addr, _)| {
+                                message
+                                    .into_message(1)
+                                    .into_packets()
+                                    .iter()
+                                    .for_each(|packet| {
+                                        gossip_service.gd_udp.send_reliable(
+                                            &addr,
+                                            packet.clone(),
+                                            &gossip_service.sock,
+                                        )
+                                    })
+                            });
                     }
+                    _ => {}
                 }
-                if let Ok(command) = to_swarm_receiver.try_recv() {
-                    gossip_service.process_gossip_command(command);
-                }
-                gossip_service
-                    .gd_udp
-                    .check_time_elapsed(&gossip_service.sock);
             }
+            if let Ok(command) = to_swarm_receiver.try_recv() {
+                gossip_service.process_gossip_command(command);
+            }
+            gossip_service
+                .gd_udp
+                .check_time_elapsed(&gossip_service.sock);
         });
         loop {
             let mut buf = [0; 50000];
@@ -374,13 +374,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let packet = Packet::from_bytes(&buf[..amt]);
                 if packet.return_receipt == GDUdp::RETURN_RECEIPT {
                     let id = String::from_utf8_lossy(&packet.id).to_string();
-                    let packet_number = usize::from_be_bytes(packet.clone().convert_packet_number()) as u32;
+                    let packet_number =
+                        usize::from_be_bytes(packet.clone().convert_packet_number()) as u32;
                     let message = MessageType::AckMessage {
                         packet_id: id,
                         packet_number,
-                        src: src.to_string(),
+                        src: thread_gd_udp.addr.to_string(),
                     };
-                    thread_gd_udp.ack(&thread_sock, &src, message)                    
+                    thread_gd_udp.ack(&thread_sock, &src, message)
                 }
                 if let Err(e) = thread_to_node_sender.send((packet, src)) {
                     info!("Error sending packet to inbox");
@@ -547,7 +548,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     info!("Error sending updated blockchain to app");
                                 }
                             } else {
-                                blockchain_network_state.dump(&block);
+                                blockchain_network_state.dump(
+                                    &block.txns,
+                                    block.header.block_reward.clone(),
+                                    &block.claims,
+                                    block.header.claim.clone(),
+                                    &block.hash,
+                                );
                                 if let Err(_) = miner_sender
                                     .send(Command::ConfirmedBlock(block.clone().as_bytes()))
                                 {
@@ -637,14 +644,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             blockchain = new_blockchain;
                         }
                         if let Some(bytes) = components.network_state {
-                            let mut new_network_state = NetworkState::from_bytes(&bytes);
-                            new_network_state.path = blockchain_network_state.path;
-                            blockchain_reward_state = new_network_state.reward_state;
-                            blockchain_network_state = new_network_state;
+                            if let Ok(mut new_network_state) = NetworkState::from_bytes(bytes) {
+                                new_network_state.path = blockchain_network_state.path;
+                                blockchain_reward_state = new_network_state.reward_state.unwrap();
+                                blockchain_network_state = new_network_state;
+                            }
                         }
 
                         if let Some(bytes) = components.ledger {
-                            let new_ledger = Ledger::from_bytes(&bytes);
+                            let new_ledger = Ledger::from_bytes(bytes);
                             blockchain_network_state.update_ledger(new_ledger);
                         }
 
@@ -682,7 +690,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         block,
                                     );
                                 } else {
-                                    blockchain_network_state.dump(&block);
+                                    blockchain_network_state.dump(
+                                        &block.txns,
+                                        block.header.block_reward.clone(),
+                                        &block.claims,
+                                        block.header.claim.clone(),
+                                        &block.hash,
+                                    );
                                     if let Err(e) = miner_sender
                                         .send(Command::ConfirmedBlock(block.clone().as_bytes()))
                                     {
@@ -716,7 +730,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         blockchain.updating_state = false;
                     }
                     Command::StateUpdateCompleted(network_state) => {
-                        blockchain_network_state = NetworkState::from_bytes(&network_state);
+                        if let Ok(updated_network_state) = NetworkState::from_bytes(network_state) {
+                            blockchain_network_state = updated_network_state;
+                        } 
                         if let Err(e) = app_sender
                             .send(Command::UpdateAppBlockchain(blockchain.clone().as_bytes()))
                         {
@@ -970,15 +986,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     Command::StateUpdateCompleted(network_state_bytes) => {
-                        let network_state = NetworkState::from_bytes(&network_state_bytes);
-                        miner.network_state = network_state.clone();
-                        miner.claim_map = miner.network_state.get_claims();
-                        miner.mining = true;
-                        if let Err(e) = miner_sender.send(Command::MineBlock) {
-                            info!("Error sending MineBlock command to miner: {:?}", e);
-                        }
-                        if let Err(_) = app_sender.send(Command::UpdateAppMiner(miner.as_bytes())) {
-                            info!("Error sending updated miner to app")
+                        if let Ok(updated_network_state) = NetworkState::from_bytes(network_state_bytes) {
+                            miner.network_state = updated_network_state.clone();
+                            miner.claim_map = miner.network_state.get_claims();
+                            miner.mining = true;
+                            if let Err(e) = miner_sender.send(Command::MineBlock) {
+                                info!("Error sending MineBlock command to miner: {:?}", e);
+                            }
+                            if let Err(_) = app_sender.send(Command::UpdateAppMiner(miner.as_bytes())) {
+                                info!("Error sending updated miner to app")
+                            }
                         }
                     }
                     Command::MineGenesis => {
@@ -1413,12 +1430,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         rect.render_widget(table, mining_data_chunks[1]);
                                     }
                                     "reward_state" => {
-                                        rect.render_widget(
-                                            render_reward_state(
-                                                &miner.network_state.reward_state.clone(),
-                                            ),
-                                            mining_data_chunks[1],
-                                        );
+                                        if let Some(reward_state) = miner.network_state.reward_state.clone() {
+                                            rect.render_widget(
+                                                render_reward_state(
+                                                    &reward_state.clone(),
+                                                ),
+                                                mining_data_chunks[1],
+                                            );
+                                        }
                                     }
                                     "network_state" => rect.render_widget(
                                         render_network_state(&miner.network_state.clone()),
