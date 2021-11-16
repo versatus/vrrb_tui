@@ -261,6 +261,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ledger = Ledger::new();
     network_state.set_ledger(ledger.as_bytes());
     let reward_state = RewardState::start();
+    network_state.set_reward_state(reward_state);
 
     //____________________________________________________________________________________________________
     // Node initialization
@@ -368,7 +369,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .check_time_elapsed(&gossip_service.sock);
         });
         loop {
-            let mut buf = [0; 50000];
+            let mut buf = [0; 65];
             let (amt, src) = thread_sock.recv_from(&mut buf).expect("No data received");
             if amt > 0 {
                 let packet = Packet::from_bytes(&buf[..amt]);
