@@ -369,7 +369,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .check_time_elapsed(&gossip_service.sock);
         });
         loop {
-            let mut buf = [0; 65];
+            let mut buf = [0; 65535];
             let (amt, src) = thread_sock.recv_from(&mut buf).expect("No data received");
             if amt > 0 {
                 let packet = Packet::from_bytes(&buf[..amt]);
