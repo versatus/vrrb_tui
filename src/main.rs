@@ -452,6 +452,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 &blockchain_reward_state,
                                 &block,
                             ) {
+                                // TODO: Replace with Command::InvalidBlock being sent to the node or gossip
+                                // and being processed.
+                                // If the block is invalid because of BlockOutOfSequence Error request the missing blocks
+                                // Or the current state of the network (first, missing blocks later)
+                                // If the block is invalid because of a NotTallestChain Error tell the miner they are missing blocks.
+                                // The miner should request the current state of the network and then all the blocks they are missing.
                                 match e.details {
                                     InvalidBlockErrorReason::BlockOutOfSequence => {
                                         // Stash block in blockchain.future_blocks
@@ -463,7 +469,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             info!("Error: {:?}", e);
                                             if let Some((_, v)) = blockchain.future_blocks.front() {
                                                 let component = StateComponent::All;
-
                                                 let message = MessageType::GetNetworkStateMessage {
                                                     sender_id: blockchain_node_id.clone(),
                                                     requested_from: sender_id,
@@ -483,6 +488,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 blockchain.updating_state = true;
                                             }
                                         }
+                                    }
+                                    InvalidBlockErrorReason::NotTallestChain => {
+                                        // Inform the miner they are missing blocks
+                                        info!("Error: {:?}", e);
+
                                     }
                                     _ => {
                                         if !blockchain.updating_state {
