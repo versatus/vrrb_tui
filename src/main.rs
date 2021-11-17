@@ -339,7 +339,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Ok(command) = to_gossip_receiver.try_recv() {
                 match command {
                     Command::SendMessage(message) => {
-                        info!("Sending message");
                         gossip_service
                             .known_peers
                             .clone()
@@ -464,6 +463,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         // Request state update once. Set "updating_state" field
                                         // in blockchain to true, so that it doesn't request it on
                                         // receipt of new future blocks which will also be invalid.
+                                        blockchain.future_blocks.insert(block.header.last_hash.clone(), block.clone());
                                         if !blockchain.updating_state {
                                             // send state request and set blockchain.updating state to true;
                                             info!("Error: {:?}", e);
@@ -478,7 +478,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     lowest_block: v.header.block_height,
                                                     component: component.as_bytes(),
                                                 };
-
+                                                
+                                                info!("Requesting state update");
                                                 if let Err(e) = gossip_sender
                                                     .send(Command::SendMessage(message))
                                                 {
@@ -589,6 +590,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     Command::GetStateComponents(requestor, components_bytes) => {
+                        info!("Received request for State update");
                         let components = StateComponent::from_bytes(&components_bytes);
                         match components {
                             StateComponent::All => {
@@ -1155,6 +1157,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let blockchain_sender = state_to_blockchain_sender.clone();
         let swarm_sender = state_to_swarm_sender.clone();
         if let Ok(command) = to_state_receiver.try_recv() {
+            info!("Received State Command");
             match command {
                 Command::SendStateComponents(requestor, components) => {
                     if let Err(e) =
