@@ -322,6 +322,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     &gossip_service.sock,
                 );
             });
+            gossip_service.known_peers.insert(socket_addr.clone(), "bootstrap".to_string());
         }
     }
     //____________________________________________________________________________________________________
