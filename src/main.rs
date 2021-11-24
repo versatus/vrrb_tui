@@ -4,6 +4,7 @@ use blockchain::blockchain::Blockchain;
 use claim::claim::Claim;
 use clipboard::{ClipboardContext, ClipboardProvider};
 use commands::command::Command;
+use streamer::recv::recv_msg;
 use crossterm::{
     event::{self, Event as CEvent, KeyCode, KeyModifiers},
     terminal::{disable_raw_mode, enable_raw_mode},
@@ -14,7 +15,6 @@ use ledger::ledger::Ledger;
 use log::info;
 use messages::message::AsMessage;
 use messages::message_types::MessageType;
-use messages::packet::Packet;
 use messages::packet::Packetize;
 use miner::miner::Miner;
 use network::components::StateComponent;
@@ -369,23 +369,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .check_time_elapsed(&gossip_service.sock);
         });
         loop {
-            let mut buf = [0; 65535];
-            let (amt, src) = thread_sock.recv_from(&mut buf).expect("No data received");
-            if amt > 0 {
-                let packet = Packet::from_bytes(&buf[..amt]);
-                if packet.return_receipt == GDUdp::RETURN_RECEIPT {
-                    let id = String::from_utf8_lossy(&packet.id).to_string();
-                    let packet_number =
-                        usize::from_be_bytes(packet.clone().convert_packet_number()) as u32;
-                    let message = MessageType::AckMessage {
-                        packet_id: id,
-                        packet_number,
-                        src: thread_gd_udp.addr.to_string(),
-                    };
-                    thread_gd_udp.ack(&thread_sock, &src, message)
+            match recv_msg(&thread_sock) {
+                Err(e) => {
+                    info!("Error receiving message: {:?}", e);
                 }
-                if let Err(e) = thread_to_node_sender.send((packet, src)) {
-                    info!("Error sending packet to inbox");
+                Ok((amt, src, packet)) => {
+                    if amt > 0 {
+                        if packet.return_receipt == GDUdp::RETURN_RECEIPT {
+                            let id = String::from_utf8_lossy(&packet.id).to_string();
+                            let packet_number = usize::from_be_bytes(packet.clone().convert_packet_number()) as u32;
+                            let message = MessageType::AckMessage {
+                                packet_id: id,
+                                packet_number,
+                                src: thread_gd_udp.addr.to_string(),
+                            };
+                            thread_gd_udp.ack(&thread_sock, &src, message)
+                        }
+                    if let Err(e) = thread_to_node_sender.send((packet, src)) {
+                        info!("Error sending packet to inbox");
+                    }
+                    }
                 }
             }
         }
