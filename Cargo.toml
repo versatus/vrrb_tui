@@ -62,3 +62,4 @@ state = { path = "../state" }
 miner = { path = "../miner" }
 blockchain = { path = "../blockchain" }
 validator = { path = "../validator" }
+streamer = { path = "../streamer" }
