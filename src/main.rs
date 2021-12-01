@@ -357,12 +357,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         )
                                     })
                             });
+                        gossip_service.ping_bootstrap();
                     }
                     _ => {}
                 }
             }
             if let Ok(command) = to_swarm_receiver.try_recv() {
                 gossip_service.process_gossip_command(command);
+                gossip_service.ping_bootstrap();
             }
             gossip_service
                 .gd_udp
