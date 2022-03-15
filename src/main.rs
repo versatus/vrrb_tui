@@ -4,18 +4,14 @@ use blockchain::blockchain::Blockchain;
 use claim::claim::Claim;
 use clipboard::{ClipboardContext, ClipboardProvider};
 use commands::command::Command;
-use streamer::recv::recv_msg;
 use crossterm::{
     event::{self, Event as CEvent, KeyCode, KeyModifiers},
     terminal::{disable_raw_mode, enable_raw_mode},
 };
 use events::events::{write_to_json, VrrbNetworkEvent};
-use gd_udp::gd_udp::GDUdp;
 use ledger::ledger::Ledger;
 use log::info;
-use messages::message::AsMessage;
 use messages::message_types::MessageType;
-use messages::packet::Packetize;
 use miner::miner::Miner;
 use network::components::StateComponent;
 use node::handler::{CommandHandler, MessageHandler};
@@ -27,7 +23,6 @@ use ritelinked::LinkedHashMap;
 use simplelog::{Config, LevelFilter, WriteLogger};
 use state::state::{Components, NetworkState};
 use std::fs;
-use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 use strum_macros::EnumIter;
 use tokio::sync::mpsc;
@@ -44,6 +39,24 @@ use txn::txn::Txn;
 use unicode_width::UnicodeWidthStr;
 use validator::validator::TxnValidator;
 use wallet::wallet::WalletAccount;
+use std::net::{SocketAddr, UdpSocket};
+use std::sync::mpsc::channel;
+use std::sync::mpsc::{Sender, Receiver};
+use udp2p_protocol::packetize;
+use udp2p_protocol::protocol::{AckMessage, Message, MessageKey, Header};
+use udp2p_node::peer_id::PeerId;
+use udp2p_node::peer_key::Key;
+use udp2p_node::peer_info::PeerInfo;
+use udp2p_gossip::protocol::GossipMessage;
+use udp2p_discovery::kad::Kademlia;
+use udp2p_discovery::routing::RoutingTable;
+use udp2p_transport::transport::Transport;
+use udp2p_transport::handler::MessageHandler as GossipMessageHandler;
+use udp2p_gossip::gossip::{GossipConfig, GossipService};
+use std::collections::{HashMap, HashSet};
+use rand::thread_rng;
+use std::env::args;
+use udp2p_utils::utils::ByteRep;
 
 pub const VALIDATOR_THRESHOLD: f64 = 0.60;
 
@@ -241,6 +254,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (to_swarm_sender, mut to_swarm_receiver) = mpsc::unbounded_channel();
     let (to_state_sender, mut to_state_receiver) = mpsc::unbounded_channel();
     let (to_app_sender, mut to_app_receiver) = mpsc::unbounded_channel();
+
     //____________________________________________________________________________________________________
 
     let wallet = if let Some(secret_key) = std::env::args().nth(3) {
@@ -284,120 +298,143 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Swarm initialization
     // Need to replace swarm with custom swarm-like struct.
     let pub_ip = public_ip::addr_v4().await;
-    let first_port = 19292;
-    let addr = format!("{:?}:{:?}", pub_ip.clone().unwrap(), first_port.clone());
-    let mut gossipsub_config = gossipsub::gossip::GossipServiceConfig::default();
-    gossipsub_config.set_public_addr(Some(addr.clone()));
-    info!("My public ip: {:?}", gossipsub_config.get_public_addr());
-    let mut gossip_service = gossipsub::gossip::GossipService::from_config(
-        gossipsub_config,
-        to_message_sender.clone(),
-        events_path.clone(),
+    let port: usize = thread_rng().gen_range(9292..19292);
+    let addr = format!("{:?}:19292", pub_ip.clone().unwrap());
+    let local_sock: std::net::SocketAddr = addr.parse().expect("unable to parse address");
+    // Bind a UDP Socket to a Socket Address with a random port between
+    // 9292 and 19292 on the localhost address.
+    let sock: UdpSocket = UdpSocket::bind(format!("0.0.0.0:{:?}", port.clone())).expect("Unable to bind to address");
+
+    // Initiate channels for communication between different threads
+    let (to_transport_tx, to_transport_rx): (
+        Sender<(SocketAddr, Message)>,
+        Receiver<(SocketAddr, Message)>,
+    ) = channel();
+    let (to_gossip_tx, to_gossip_rx) = channel();
+    let (to_kad_tx, to_kad_rx) = channel();
+    let (incoming_ack_tx, incoming_ack_rx): (Sender<AckMessage>, Receiver<AckMessage>) = channel();
+    let (to_app_tx, _to_app_rx) = channel::<GossipMessage>();
+
+    // Initialize local peer information
+    let key: Key = Key::rand();
+    let id: PeerId = PeerId::from_key(&key);
+    let info: PeerInfo = PeerInfo::new(id, key, local_sock.clone());
+
+    // initialize a kademlia, transport and message handler instance
+    let routing_table = RoutingTable::new(info.clone());
+    let ping_pong = Instant::now();
+    let interval = Duration::from_secs(20);
+    let kad = Kademlia::new(routing_table, to_transport_tx.clone(), to_kad_rx, HashSet::new(), interval, ping_pong.clone());
+    let mut transport = Transport::new(local_sock.clone(), incoming_ack_rx, to_transport_rx);
+    let mut message_handler = GossipMessageHandler::new(
+        to_transport_tx.clone(),
+        incoming_ack_tx.clone(),
+        HashMap::new(),
+        to_kad_tx.clone(),
+        to_gossip_tx.clone(),
     );
+    let protocol_id = String::from("vrrb-0.1.0-test-net");
+    let gossip_config = GossipConfig::new(
+        protocol_id,
+        8,
+        3,
+        8,
+        3,
+        12,
+        3,
+        0.4,
+        Duration::from_millis(250),
+        80,
+    );
+    let heartbeat = Instant::now();
+    let ping_pong = Instant::now();
+    let mut gossip = GossipService::new(
+        local_sock.clone(),
+        to_gossip_rx,
+        to_transport_tx.clone(),
+        to_app_tx.clone(),
+        kad,
+        gossip_config,
+        heartbeat,
+        ping_pong,
+    );
+
+    // Inform the local node of their address (since the port is randomized)
+    println!("My Address: {:?}", &local_sock);
+    println!("My ID: {:?}", info.id);
 
     //____________________________________________________________________________________________________
 
     //____________________________________________________________________________________________________
     // Dial peer if provided
-    if let Some(to_dial) = std::env::args().nth(1) {
-        if to_dial != "None".to_string() {
-            let socket_addr: SocketAddr = to_dial
-                .clone()
-                .parse()
-                .expect("Unable to parse socket address");
-            let message = MessageType::Identify {
-                data: addr.clone(),
-                pubkey: gossip_service.pubkey.to_string().clone(),
-            };
-            info!("Sending identify message to bootstrap node");
-            gossip_service
-                .sock
-                .set_ttl(255)
-                .expect("Cannot set ttl on socket");
-            let packets = message.into_message(1).into_packets();
-            packets.iter().for_each(|packet| {
-                gossip_service.gd_udp.send_reliable(
-                    &socket_addr,
-                    packet.clone(),
-                    &gossip_service.sock,
-                );
-            });
-            gossip_service.set_bootstrap(socket_addr.clone());
-        }
-    }
+
     //____________________________________________________________________________________________________
+
     //____________________________________________________________________________________________________
     // Swarm event thread
-
-    let mut thread_gd_udp = gossip_service.gd_udp.clone();
+    // Clone the socket for the transport and message handling thread(s)
+    let thread_sock = sock.try_clone().expect("Unable to clone socket");
+    let addr = local_sock.clone();
     std::thread::spawn(move || {
-        let thread_sock = gossip_service
-            .sock
-            .try_clone()
-            .expect("Unable to clone socket");
-        let thread_to_node_sender = gossip_service.to_node_sender.clone();
+        let inner_sock = thread_sock.try_clone().expect("Unable to clone socket");
         std::thread::spawn(move || loop {
-            if let Ok(command) = to_gossip_receiver.try_recv() {
-                match command {
-                    Command::SendMessage(message) => {
-                        gossip_service
-                            .known_peers
-                            .clone()
-                            .iter()
-                            .for_each(|(addr, _)| {
-                                message
-                                    .into_message(1)
-                                    .into_packets()
-                                    .iter()
-                                    .for_each(|packet| {
-                                        gossip_service.gd_udp.send_reliable(
-                                            &addr,
-                                            packet.clone(),
-                                            &gossip_service.sock,
-                                        )
-                                    })
-                            });
-                        gossip_service.ping_bootstrap();
-                    }
-                    _ => {}
-                }
-            }
-            if let Ok(command) = to_swarm_receiver.try_recv() {
-                gossip_service.process_gossip_command(command);
-                gossip_service.ping_bootstrap();
-            }
-            gossip_service
-                .gd_udp
-                .check_time_elapsed(&gossip_service.sock);
+            transport.incoming_ack();
+            transport.outgoing_msg(&inner_sock);
+            transport.check_time_elapsed(&inner_sock);
         });
+
         loop {
-            match recv_msg(&thread_sock) {
-                Err(e) => {
-                    info!("Error receiving message: {:?}", e);
-                }
-                Ok((amt, src, packet)) => {
-                    if amt > 0 {
-                        if packet.return_receipt == GDUdp::RETURN_RECEIPT {
-                            let id = String::from_utf8_lossy(&packet.id).to_string();
-                            let packet_number = usize::from_be_bytes(packet.clone().convert_packet_number()) as u32;
-                            let message = MessageType::AckMessage {
-                                packet_id: id,
-                                packet_number,
-                                src: thread_gd_udp.addr.to_string(),
-                            };
-                            thread_gd_udp.ack(&thread_sock, &src, message)
+            let local = addr.clone();
+            let mut buf = [0u8; 65536];
+            message_handler.recv_msg(&thread_sock, &mut buf, addr.clone());
+        }
+    });
+    
+
+    if let Some(to_dial) = args().nth(1) {
+        let bootstrap: SocketAddr = to_dial.parse().expect("Unable to parse address");
+        gossip.kad.bootstrap(&bootstrap);
+        if let Some(bytes) = info.as_bytes() {
+            gossip.kad.add_peer(bytes)
+        }
+    } else {
+        if let Some(bytes) = info.as_bytes() {
+            gossip.kad.add_peer(bytes)
+        }
+    }
+
+    std::thread::spawn(move || {
+        let thread_to_gossip_tx = to_gossip_tx.clone();
+        loop {
+            match to_gossip_receiver.try_recv() {
+                Ok(command) => {
+                    if let Command::SendMessage(message) = command {
+                        let msg = GossipMessage {
+                            id: MessageKey::rand().inner(),
+                            data: message.as_bytes(),
+                            sender: local_sock.clone()
+                        };
+                        let message = Message {
+                            head: Header::Gossip,
+                            msg: msg.as_bytes().unwrap()
+                        };
+                        if let Err(e) = thread_to_gossip_tx.send((local_sock.clone(), message)) {
+                            info!("Error sending message to gossip")
                         }
-                    if let Err(e) = thread_to_node_sender.send((packet, src)) {
-                        info!("Error sending packet to inbox");
                     }
-                    }
+                }
+                Err(e) => {
+
                 }
             }
         }
     });
 
-    //____________________________________________________________________________________________________
+    std::thread::spawn(move || {
+        gossip.start();
+    });
 
+    //____________________________________________________________________________________________________
     //____________________________________________________________________________________________________
     // Node thread
     tokio::task::spawn(async move {
@@ -1282,7 +1319,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             rect.render_widget(tabs, chunks[2]);
 
             match active_menu_item {
-                MenuItem::Home => rect.render_widget(render_home(&addr, &wallet), chunks[3]),
+                MenuItem::Home => rect.render_widget(render_home(&addr.to_string(), &wallet), chunks[3]),
                 MenuItem::Wallet => {
                     let wallet_chunks = Layout::default()
                         .direction(Direction::Horizontal)
