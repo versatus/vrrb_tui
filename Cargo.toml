@@ -16,7 +16,7 @@ path = "src/main.rs"
 [dependencies]
 secp256k1 = {version = "0.20.2", features = ["rand"]}
 sha256 = "1.0.2"
-rand = {version = "0.6", features = ["std"]}
+rand = "0.8.4"
 uuid = { version = "0.8.0", features = ["serde", "v4"] }
 bytebuffer = "0.2.1"
 chrono = "0.4.19"
@@ -44,13 +44,20 @@ strum_macros = "0.21.0"
 unicode-width = "0.1.9"
 clipboard = "0.5.0"
 public-ip = "0.2.1"
-gossipsub = { path = "../gossipsub" }
+udp2p_discovery = "0.2.2"
+udp2p_gossip = "0.2.5"
+udp2p_gd_udp = "0.2.2"
+udp2p_node = "0.1.0"
+udp2p_protocol = "0.2.0"
+udp2p_record = "0.2.0"
+udp2p_transport = "0.2.2"
+udp2p_traits = "0.1.0"
+udp2p_utils = "0.2.0"
 network = { path = "../network" }
 node = { path = "../node" }
 commands = { path = "../commands" }
 messages = { path = "../messages" }
 events = { path = "../events" }
-gd_udp = { path = "../gd_udp" }
 claim = { path = "../claim" }
 pool = { path = "../pool" }
 reward = { path = "../reward" }
@@ -62,4 +69,3 @@ state = { path = "../state" }
 miner = { path = "../miner" }
 blockchain = { path = "../blockchain" }
 validator = { path = "../validator" }
-streamer = { path = "../streamer" }
