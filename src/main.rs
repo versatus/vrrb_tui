@@ -413,7 +413,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match chat_rx.recv() {
                 Ok(gossip_msg) => {
                     if let Some(msg) = MessageType::from_bytes(&gossip_msg.data) {
-                        info!("Received Message: {:?}", msg);
                         if let Some(command) = message::process_message(msg, thread_node_id.clone()) {
                             if let Err(e) = msg_to_command_sender.send(command) {
                                 info!("Error sending to command handler: {:?}", e);
@@ -1304,12 +1303,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // State Sending Thread
     //____________________________________________________________________________________________________
     let state_to_swarm_sender = to_swarm_sender.clone();
+    let state_to_gossip_sender = to_gossip_tx.clone();
     let state_to_blockchain_sender = to_blockchain_sender.clone();
     let mut state_chunk_cache: LinkedHashMap<u128, Vec<u8>> = LinkedHashMap::new();
     let state_node_id = node_id.clone();
     std::thread::spawn(move || loop {
         let blockchain_sender = state_to_blockchain_sender.clone();
         let swarm_sender = state_to_swarm_sender.clone();
+        let gossip_sender = state_to_gossip_sender.clone();
         if let Ok(command) = to_state_receiver.try_recv() {
             info!("Received State Command");
             match command {
@@ -1331,12 +1332,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         sender_id: state_node_id.clone(),
                     };
 
+                    let head = Header::Gossip;
+                    let msg_id = MessageKey::rand();
+                    let gossip_msg = GossipMessage {
+                        id: msg_id.inner(),
+                        data: message.as_bytes(),
+                        sender: addr.clone()
+                    };
+
+                    let msg = Message {
+                        head,
+                        msg: gossip_msg.as_bytes().unwrap()
+                    };
+
                     // TODO: Replace the below with sending to the correct channel
-                    if let Err(e) = swarm_sender
-                        .send(Command::SendStateComponents(requestor, message.as_bytes()))
-                    {
-                        info!("Error sending to swarm sender: {:?}", e);
-                    }
+                    // if let Err(e) = gossip_sender
+                    //     .send(Command::SendStateComponents(requestor, message.as_bytes()))
+                    // {
+                    //     info!("Error sending to swarm sender: {:?}", e);
+                    // }
                 }
                 Command::StoreStateComponents(data) => {
                     let components = Components::from_bytes(&data);
