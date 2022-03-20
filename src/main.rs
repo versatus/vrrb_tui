@@ -1314,62 +1314,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let swarm_sender = state_to_swarm_sender.clone();
         let gossip_sender = state_to_gossip_sender.clone();
         if let Ok(command) = to_state_receiver.try_recv() {
-            info!("Received State Command");
             match command {
-                Command::SendStateComponents(requestor, components) => {
-                    if let Err(e) =
-                        blockchain_sender.send(Command::GetStateComponents(requestor, components))
-                    {
-                        info!(
-                            "Error sending GetStateComponents Command to blockchain: {:?}",
-                            e
-                        );
-                    }
+                _ => {
+                    info!("Received State Command: {:?}", command);
                 }
-                Command::RequestedComponents(requestor, components) => {
-                    // TODO: Add 3rd piecce to Requested Components for the requestor ID
-                    let message = MessageType::StateComponentsMessage {
-                        data: components,
-                        requestor: requestor.clone(),
-                        sender_id: state_node_id.clone(),
-                    };
-                    info!("Assembled state components: {:?}", message);
-                    let head = Header::Gossip;
-                    let msg_id = MessageKey::rand();
-                    let gossip_msg = GossipMessage {
-                        id: msg_id.inner(),
-                        data: message.as_bytes(),
-                        sender: addr.clone()
-                    };
-
-                    let msg = Message {
-                        head,
-                        msg: gossip_msg.as_bytes().unwrap()
-                    };
-
-                    // TODO: Replace the below with sending to the correct channel
-                    let requestor_address: SocketAddr = requestor.parse().expect("Unable to parser requestor address");
-                    if let Err(e) = gossip_sender
-                        .send((requestor_address, msg))
-                    {
-                        info!("Error sending to swarm sender: {:?}", e);
-                    } else {
-                        info!("Forwarding state components to {:?}", requestor)
-                    }
-                }
-                Command::StoreStateComponents(data) => {
-                    let components = Components::from_bytes(&data);
-                    if let Err(e) = blockchain_sender.send(Command::StateUpdateComponents(data)) {
-                        info!(
-                            "Error sending state update componetns to blockchain thread: {:?}",
-                            e
-                        );
-                    }
-                }
-                Command::ConfirmedBlock(_) => {
-                    // Dump block to block archive.
-                }
-                _ => {}
             }
         }
     });
