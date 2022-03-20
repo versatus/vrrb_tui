@@ -882,7 +882,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let miner_reward_state = reward_state.clone();
     let miner_to_miner_sender = to_miner_sender.clone();
     let miner_to_blockchain_sender = to_blockchain_sender.clone();
-    let miner_to_swarm_sender = to_swarm_sender.clone();
     let miner_to_gossip_sender = to_gossip_tx.clone();
     let miner_to_app_sender = to_app_sender.clone();
     let miner_node_id = node_id.clone();
@@ -903,7 +902,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         loop {
             let blockchain_sender = miner_to_blockchain_sender.clone();
-            let swarm_sender = miner_to_swarm_sender.clone();
             let gossip_sender = miner_to_gossip_sender.clone();
             let miner_sender = miner_to_miner_sender.clone();
             let app_sender = miner_to_app_sender.clone();
@@ -1307,7 +1305,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state_to_swarm_sender = to_swarm_sender.clone();
     let state_to_gossip_sender = to_gossip_tx.clone();
     let state_to_blockchain_sender = to_blockchain_sender.clone();
-    let mut state_chunk_cache: LinkedHashMap<u128, Vec<u8>> = LinkedHashMap::new();
     let state_node_id = node_id.clone();
     std::thread::spawn(move || loop {
         let blockchain_sender = state_to_blockchain_sender.clone();
@@ -1315,6 +1312,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let gossip_sender = state_to_gossip_sender.clone();
         if let Ok(command) = to_state_receiver.try_recv() {
             match command {
+                Command::SendStateComponents(requestor, component_bytes) => {
+                    let component = StateComponent::from_bytes(&component_bytes);
+                    info!("{:?}", component);
+                }
                 _ => {
                     info!("Received State Command: {:?}", command);
                 }
