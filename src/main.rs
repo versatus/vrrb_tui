@@ -512,6 +512,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 let message = MessageType::GetNetworkStateMessage {
                                                     sender_id: blockchain_node_id.clone(),
                                                     requested_from: sender_id,
+                                                    requestor_address: addr.clone(),
                                                     requestor_node_type: node_type
                                                         .clone()
                                                         .as_bytes(),
@@ -565,6 +566,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 let message = MessageType::GetNetworkStateMessage {
                                                     sender_id: blockchain_node_id.clone(),
                                                     requested_from: sender_id,
+                                                    requestor_address: addr.clone(),
                                                     requestor_node_type: node_type
                                                         .clone()
                                                         .as_bytes(),
@@ -1346,11 +1348,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     };
 
                     // TODO: Replace the below with sending to the correct channel
-                    // if let Err(e) = gossip_sender
-                    //     .send(Command::SendStateComponents(requestor, message.as_bytes()))
-                    // {
-                    //     info!("Error sending to swarm sender: {:?}", e);
-                    // }
+                    let requestor_address: SocketAddr = requestor.parse().expect("Unable to parser requestor address");
+                    if let Err(e) = gossip_sender
+                        .send((requestor_address, msg))
+                    {
+                        info!("Error sending to swarm sender: {:?}", e);
+                    } else {
+                        info!("Forwarding state to {:?}", requestor);
+                    }
                 }
                 Command::StoreStateComponents(data) => {
                     let components = Components::from_bytes(&data);
