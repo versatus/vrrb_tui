@@ -508,7 +508,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             // send state request and set blockchain.updating state to true;
                                             info!("Error: {:?}", e);
                                             if let Some((_, v)) = blockchain.future_blocks.front() {
-                                                let component = StateComponent::NetworkState;
+                                                let component = StateComponent::All;
                                                 let message = MessageType::GetNetworkStateMessage {
                                                     sender_id: blockchain_node_id.clone(),
                                                     requested_from: sender_id,
@@ -562,7 +562,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             if block.header.block_height
                                                 > lowest_block.header.block_height + 1
                                             {
-                                                let component = StateComponent::NetworkState;
+                                                let component = StateComponent::All;
                                                 let message = MessageType::GetNetworkStateMessage {
                                                     sender_id: blockchain_node_id.clone(),
                                                     requested_from: sender_id,
@@ -1354,7 +1354,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     {
                         info!("Error sending to swarm sender: {:?}", e);
                     } else {
-                        info!("Forwarding state components to {:?}", requestor);
+                        info!("Forwarding state components to {:?}", requestor)
                     }
                 }
                 Command::StoreStateComponents(data) => {
