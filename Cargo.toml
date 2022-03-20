@@ -44,15 +44,7 @@ strum_macros = "0.21.0"
 unicode-width = "0.1.9"
 clipboard = "0.5.0"
 public-ip = "0.2.1"
-udp2p_discovery = "0.2.2"
-udp2p_gossip = "0.2.5"
-udp2p_gd_udp = "0.2.2"
-udp2p_node = "0.1.0"
-udp2p_protocol = "0.2.0"
-udp2p_record = "0.2.0"
-udp2p_transport = "0.2.2"
-udp2p_traits = "0.1.0"
-udp2p_utils = "0.2.0"
+udp2p = "0.1.2"
 network = { path = "../network" }
 node = { path = "../node" }
 commands = { path = "../commands" }

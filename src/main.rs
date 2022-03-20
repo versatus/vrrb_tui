@@ -42,21 +42,22 @@ use wallet::wallet::WalletAccount;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::mpsc::channel;
 use std::sync::mpsc::{Sender, Receiver};
-use udp2p_protocol::packetize;
-use udp2p_protocol::protocol::{AckMessage, Message, MessageKey, Header};
-use udp2p_node::peer_id::PeerId;
-use udp2p_node::peer_key::Key;
-use udp2p_node::peer_info::PeerInfo;
-use udp2p_gossip::protocol::GossipMessage;
-use udp2p_discovery::kad::Kademlia;
-use udp2p_discovery::routing::RoutingTable;
-use udp2p_transport::transport::Transport;
-use udp2p_transport::handler::MessageHandler as GossipMessageHandler;
-use udp2p_gossip::gossip::{GossipConfig, GossipService};
+use udp2p::protocol::protocol::packetize;
+use udp2p::protocol::protocol::{AckMessage, Message, MessageKey, Header};
+use udp2p::node::peer_id::PeerId;
+use udp2p::node::peer_key::Key;
+use udp2p::node::peer_info::PeerInfo;
+use udp2p::gossip::protocol::GossipMessage;
+use udp2p::discovery::kad::Kademlia;
+use udp2p::discovery::routing::RoutingTable;
+use udp2p::transport::transport::Transport;
+use udp2p::transport::handler::MessageHandler as GossipMessageHandler;
+use udp2p::gossip::gossip::{GossipConfig, GossipService};
 use std::collections::{HashMap, HashSet};
 use rand::thread_rng;
 use std::env::args;
-use udp2p_utils::utils::ByteRep;
+use udp2p::utils::utils::ByteRep;
+use network::message;
 
 pub const VALIDATOR_THRESHOLD: f64 = 0.60;
 
@@ -254,6 +255,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (to_swarm_sender, mut to_swarm_receiver) = mpsc::unbounded_channel();
     let (to_state_sender, mut to_state_receiver) = mpsc::unbounded_channel();
     let (to_app_sender, mut to_app_receiver) = mpsc::unbounded_channel();
+    let (to_transport_tx, to_transport_rx): (
+        Sender<(SocketAddr, Message)>,
+        Receiver<(SocketAddr, Message)>,
+    ) = channel();
+    let (to_gossip_tx, to_gossip_rx) = channel();
+    let (to_kad_tx, to_kad_rx) = channel();
+    let (incoming_ack_tx, incoming_ack_rx): (Sender<AckMessage>, Receiver<AckMessage>) = channel();
+    let (to_app_tx, _to_app_rx) = channel::<GossipMessage>();
 
     //____________________________________________________________________________________________________
 
@@ -286,6 +295,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         to_gossip_sender.clone(),
         to_swarm_sender.clone(),
         to_state_sender.clone(),
+        to_gossip_tx.clone(),
         command_receiver,
     );
 
@@ -298,29 +308,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Swarm initialization
     // Need to replace swarm with custom swarm-like struct.
     let pub_ip = public_ip::addr_v4().await;
-    let port: usize = thread_rng().gen_range(9292..19292);
-    let addr = format!("{:?}:19292", pub_ip.clone().unwrap());
+    // let port: usize = thread_rng().gen_range(9292..19292);
+    let port: usize = 19292;
+    let addr = format!("{:?}:{:?}", pub_ip.clone().unwrap(), port.clone());
     let local_sock: std::net::SocketAddr = addr.parse().expect("unable to parse address");
     // Bind a UDP Socket to a Socket Address with a random port between
     // 9292 and 19292 on the localhost address.
     let sock: UdpSocket = UdpSocket::bind(format!("0.0.0.0:{:?}", port.clone())).expect("Unable to bind to address");
 
-    // Initiate channels for communication between different threads
-    let (to_transport_tx, to_transport_rx): (
-        Sender<(SocketAddr, Message)>,
-        Receiver<(SocketAddr, Message)>,
-    ) = channel();
-    let (to_gossip_tx, to_gossip_rx) = channel();
-    let (to_kad_tx, to_kad_rx) = channel();
-    let (incoming_ack_tx, incoming_ack_rx): (Sender<AckMessage>, Receiver<AckMessage>) = channel();
-    let (to_app_tx, _to_app_rx) = channel::<GossipMessage>();
 
-    // Initialize local peer information
+
+    // // Initialize local peer information
     let key: Key = Key::rand();
     let id: PeerId = PeerId::from_key(&key);
-    let info: PeerInfo = PeerInfo::new(id, key, local_sock.clone());
+    let info: PeerInfo = PeerInfo::new(id, key, pub_ip.clone().unwrap(), port as u32);
 
-    // initialize a kademlia, transport and message handler instance
+    // // initialize a kademlia, transport and message handler instance
     let routing_table = RoutingTable::new(info.clone());
     let ping_pong = Instant::now();
     let interval = Duration::from_secs(20);
@@ -350,6 +353,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ping_pong = Instant::now();
     let mut gossip = GossipService::new(
         local_sock.clone(),
+        info.address.clone(),
         to_gossip_rx,
         to_transport_tx.clone(),
         to_app_tx.clone(),
@@ -359,20 +363,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ping_pong,
     );
 
-    // Inform the local node of their address (since the port is randomized)
-    println!("My Address: {:?}", &local_sock);
-    println!("My ID: {:?}", info.id);
+    // // Inform the local node of their address (since the port is randomized)
+    // //____________________________________________________________________________________________________
 
-    //____________________________________________________________________________________________________
+    // //____________________________________________________________________________________________________
+    // // Dial peer if provided
 
-    //____________________________________________________________________________________________________
-    // Dial peer if provided
+    // //____________________________________________________________________________________________________
 
-    //____________________________________________________________________________________________________
-
-    //____________________________________________________________________________________________________
-    // Swarm event thread
-    // Clone the socket for the transport and message handling thread(s)
+    // //____________________________________________________________________________________________________
+    // // Swarm event thread
+    // // Clone the socket for the transport and message handling thread(s)
     let thread_sock = sock.try_clone().expect("Unable to clone socket");
     let addr = local_sock.clone();
     std::thread::spawn(move || {
@@ -403,36 +404,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    let thread_to_gossip = to_gossip_tx.clone();
+    let (chat_tx, chat_rx) = channel::<GossipMessage>();
+    let thread_node_id = node_id.clone();
+    let msg_to_command_sender = command_sender.clone();
     std::thread::spawn(move || {
-        let thread_to_gossip_tx = to_gossip_tx.clone();
         loop {
-            match to_gossip_receiver.try_recv() {
-                Ok(command) => {
-                    if let Command::SendMessage(message) = command {
-                        let msg = GossipMessage {
-                            id: MessageKey::rand().inner(),
-                            data: message.as_bytes(),
-                            sender: local_sock.clone()
-                        };
-                        let message = Message {
-                            head: Header::Gossip,
-                            msg: msg.as_bytes().unwrap()
-                        };
-                        if let Err(e) = thread_to_gossip_tx.send((local_sock.clone(), message)) {
-                            info!("Error sending message to gossip")
+            match chat_rx.recv() {
+                Ok(gossip_msg) => {
+                    if let Some(msg) = MessageType::from_bytes(&gossip_msg.data) {
+                        info!("Received Message: {:?}", msg);
+                        if let Some(command) = message::process_message(msg, thread_node_id.clone()) {
+                            if let Err(e) = msg_to_command_sender.send(command) {
+                                info!("Error sending to command handler: {:?}", e);
+                            }
                         }
                     }
-                }
-                Err(e) => {
-
-                }
+                },
+                Err(_) => {}
             }
         }
     });
 
     std::thread::spawn(move || {
-        gossip.start();
+        gossip.start(chat_tx.clone());
     });
+
+    info!("Started gossip service");
 
     //____________________________________________________________________________________________________
     //____________________________________________________________________________________________________
@@ -451,7 +449,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut blockchain_reward_state = reward_state.clone();
     let blockchain_to_miner_sender = to_miner_sender.clone();
     let blockchain_to_swarm_sender = to_swarm_sender.clone();
-    let blockchain_to_gossip_sender = to_gossip_sender.clone();
+    let blockchain_to_gossip_sender = to_gossip_tx.clone();
     let blockchain_to_blockchain_sender = to_blockchain_sender.clone();
     let blockchain_to_state_sender = to_state_sender.clone();
     let blockchain_to_app_sender = to_app_sender.clone();
@@ -522,9 +520,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     component: component.as_bytes(),
                                                 };
                                                 
+                                                let msg_id = MessageKey::rand();
+                                                let head = Header::Gossip;
+                                                let gossip_msg = GossipMessage {
+                                                    id: msg_id.inner(),
+                                                    data: message.as_bytes(),
+                                                    sender: addr.clone()
+                                                };
+
+                                                let msg = Message {
+                                                    head,
+                                                    msg: gossip_msg.as_bytes().unwrap()
+                                                };
+
                                                 info!("Requesting state update");
                                                 if let Err(e) = gossip_sender
-                                                    .send(Command::SendMessage(message))
+                                                    .send((addr.clone(), msg))
                                                 {
                                                     info!("Error sending state update request to swarm sender: {:?}", e);
                                                 };
@@ -562,8 +573,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     component: component.as_bytes(),
                                                 };
 
+                                                let head = Header::Gossip;
+                                                let msg_id = MessageKey::rand();
+                                                let gossip_msg = GossipMessage {
+                                                    id: msg_id.inner(),
+                                                    data: message.as_bytes(),
+                                                    sender: addr.clone()
+                                                };
+                                                let msg = Message {
+                                                    head,
+                                                    msg: gossip_msg.as_bytes().unwrap()
+                                                };
+
+                                                // TODO: Replace the below with sending to the correct channel
                                                 if let Err(e) = gossip_sender
-                                                    .send(Command::SendMessage(message))
+                                                    .send((addr.clone(), msg))
                                                 {
                                                     info!("Error sending state update request to swarm sender: {:?}", e);
                                                 };
@@ -577,8 +601,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     miner_id: sender_id,
                                                     sender_id: blockchain_node_id.clone(),
                                                 };
+
+                                                let head = Header::Gossip;
+                                                let msg_id = MessageKey::rand();
+                                                let gossip_msg = GossipMessage {
+                                                    id: msg_id.inner(),
+                                                    data: message.as_bytes(),
+                                                    sender: addr.clone()
+                                                };
+                                                let msg = Message {
+                                                    head,
+                                                    msg: gossip_msg.as_bytes().unwrap()
+                                                };
+
+                                                // TODO: Replace the below with sending to the correct channel
                                                 if let Err(e) = gossip_sender
-                                                    .send(Command::SendMessage(message))
+                                                    .send((addr.clone(), msg))
                                                 {
                                                     info!("Error sending state update request to swarm sender: {:?}", e);
                                                 };
@@ -844,7 +882,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let miner_to_miner_sender = to_miner_sender.clone();
     let miner_to_blockchain_sender = to_blockchain_sender.clone();
     let miner_to_swarm_sender = to_swarm_sender.clone();
-    let miner_to_gossip_sender = to_gossip_sender.clone();
+    let miner_to_gossip_sender = to_gossip_tx.clone();
     let miner_to_app_sender = to_app_sender.clone();
     let miner_node_id = node_id.clone();
     std::thread::spawn(move || {
@@ -870,8 +908,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let app_sender = miner_to_app_sender.clone();
             if let Ok(command) = to_miner_receiver.try_recv() {
                 match command {
-                    Command::SendMessage(message) => {
-                        if let Err(e) = gossip_sender.send(Command::SendMessage(message)) {
+                    Command::SendMessage(src, message) => {
+
+                        // TODO: Replace the below with sending to the correct channel
+                        if let Err(e) = gossip_sender.send((src, message)) {
                             info!("Error sending to swarm receiver: {:?}", e);
                         }
                     }
@@ -899,10 +939,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     sender_id: miner_node_id.clone().to_string(),
                                                 };
 
+                                                let msg_id = MessageKey::rand();
+                                                let gossip_msg = GossipMessage {
+                                                    id: msg_id.inner(),
+                                                    data: message.as_bytes(),
+                                                    sender: addr.clone(),
+                                                };
+
+                                                let head = Header::Gossip;
+                                                
+                                                let msg = Message {
+                                                    head,
+                                                    msg: gossip_msg.as_bytes().unwrap()
+                                                };
+
                                                 miner.mining = false;
 
+                                                // TODO: Replace the below with sending to the correct channel
                                                 if let Err(e) = gossip_sender
-                                                    .send(Command::SendMessage(message))
+                                                    .send((addr.clone(), msg))
                                                 {
                                                     info!("Error sending SendMessage command to swarm: {:?}", e);
                                                 }
@@ -993,7 +1048,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             txn_validator: txn_validator.as_bytes(),
                             sender_id: miner_node_id.clone(),
                         };
-                        if let Err(e) = gossip_sender.send(Command::SendMessage(message)) {
+
+                        let head = Header::Gossip;
+                        let msg_id = MessageKey::rand();
+                        let gossip_msg = GossipMessage {
+                            id: msg_id.inner(),
+                            data: message.as_bytes(),
+                            sender: addr.clone()
+                        };
+
+                        let msg = Message {
+                            head,
+                            msg: gossip_msg.as_bytes().unwrap()
+                        };
+                        
+
+                        // TODO: Replace the below with sending to the correct channel
+                        if let Err(e) = gossip_sender.send((addr.clone(), msg)) {
                             info!("Error sending SendMessage command to swarm: {:?}", e);
                         }
                         if let Err(_) = app_sender.send(Command::UpdateAppMiner(miner.as_bytes())) {
@@ -1062,8 +1133,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 block: block.clone().as_bytes(),
                                 sender_id: miner_node_id.clone(),
                             };
+                            let head = Header::Gossip;
+                            let msg_id = MessageKey::rand();
+                            let gossip_msg = GossipMessage {
+                                id: msg_id.inner(),
+                                data: message.as_bytes(),
+                                sender: addr.clone()
+                            };
 
-                            if let Err(e) = gossip_sender.send(Command::SendMessage(message)) {
+                            let msg = Message {
+                                head,
+                                msg: gossip_msg.as_bytes().unwrap()
+                            };
+                            // TODO: Replace the below with sending to the correct channel
+                            if let Err(e) = gossip_sender.send((addr.clone(), msg)) {
                                 info!("Error sending SendMessage command to swarm: {:?}", e);
                             }
                             if let Err(_) = blockchain_sender.send(Command::PendingBlock(
@@ -1084,8 +1167,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             claim: miner.claim.clone().as_bytes(),
                             sender_id: miner_node_id.clone(),
                         };
+                        let head = Header::Gossip;
+                        let msg_id = MessageKey::rand();
+                        let gossip_msg = GossipMessage {
+                            id: msg_id.inner(),
+                            data: message.as_bytes(),
+                            sender: addr.clone()
+                        };
 
-                        if let Err(e) = gossip_sender.send(Command::SendMessage(message)) {
+                        let msg = Message {
+                            head,
+                            msg: gossip_msg.as_bytes().unwrap()
+                        };
+
+                        // TODO: Replace the below with sending to the correct channel
+                        if let Err(e) = gossip_sender.send((addr.clone(), msg)) {
                             info!("Error sending SendMessage command to swarm: {:?}", e);
                         }
                     }
@@ -1123,14 +1219,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             miner
                                                 .abandoned_claim_counter
                                                 .insert(miner.claim.pubkey.clone(), v.clone());
+
+                                            let head = Header::Gossip;
+                                            let msg_id = MessageKey::rand();
+                                            let gossip_msg = GossipMessage {
+                                                id: msg_id.inner(),
+                                                data: message.as_bytes(),
+                                                sender: addr.clone()
+                                            };
+
+                                            let msg = Message {
+                                                head,
+                                                msg: gossip_msg.as_bytes().unwrap()
+                                            };
+                                            // TODO: Replace the below with sending to the correct channel                                                
                                             if let Err(e) =
-                                                gossip_sender.send(Command::SendMessage(message))
+                                                gossip_sender.send((addr.clone(), msg))
                                             {
                                                 info!("Error sending ClaimAbandoned message to swarm: {:?}", e);
                                             }
 
                                             let mut abandoned_claim_map =
                                                 miner.abandoned_claim_counter.clone();
+
                                             abandoned_claim_map
                                                 .retain(|_, claim| v.hash == claim.hash);
 
@@ -1220,6 +1331,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         sender_id: state_node_id.clone(),
                     };
 
+                    // TODO: Replace the below with sending to the correct channel
                     if let Err(e) = swarm_sender
                         .send(Command::SendStateComponents(requestor, message.as_bytes()))
                     {
@@ -1244,7 +1356,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let terminal_to_swarm_sender = to_swarm_sender.clone();
-    let terminal_to_gossip_sender = to_gossip_sender.clone();
+    let terminal_to_gossip_sender = to_gossip_tx.clone();
     let terminal_node_id = node_id.clone();
     loop {
         let swarm_sender = terminal_to_swarm_sender.clone();
@@ -2020,8 +2132,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 txn: txn.as_bytes(),
                                                 sender_id: terminal_node_id.clone(),
                                             };
+                                            let head = Header::Gossip;
+                                            let msg_id = MessageKey::rand();
+                                            let gossip_msg = GossipMessage {
+                                                id: msg_id.inner(),
+                                                data: message.as_bytes(),
+                                                sender: addr.clone()
+                                            };
+
+                                            let msg = Message {
+                                                head,
+                                                msg: gossip_msg.as_bytes().unwrap()
+                                            };
                                             if let Err(e) =
-                                                gossip_sender.send(Command::SendMessage(message))
+                                                gossip_sender.send((addr.clone(), msg))
                                             {
                                                 info!("Error sending to command receiver: {:?}", e);
                                             };
