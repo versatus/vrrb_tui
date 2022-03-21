@@ -414,7 +414,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match chat_rx.recv() {
                 Ok(gossip_msg) => {
                     if let Some(msg) = MessageType::from_bytes(&gossip_msg.data) {
-                        if let Some(command) = message::process_message(msg, thread_node_id.clone()) {
+                        if let Some(command) = message::process_message(msg, thread_node_id.clone(), addr.to_string()) {
                             if let Err(e) = msg_to_command_sender.send(command) {
                                 info!("Error sending to command handler: {:?}", e);
                             }
@@ -505,7 +505,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         // in blockchain to true, so that it doesn't request it on
                                         // receipt of new future blocks which will also be invalid.
                                         blockchain.future_blocks.insert(block.header.last_hash.clone(), block.clone());
-                                        if !blockchain.updating_state {
+                                        if !blockchain.updating_state && !blockchain.processing_backlog {
                                             // send state request and set blockchain.updating state to true;
                                             info!("Error: {:?}", e);
                                             if let Some((_, v)) = blockchain.future_blocks.front() {
@@ -725,39 +725,106 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     Command::StoreStateComponents(component_bytes, component_type) => {
-                        blockchain.components_received.insert(component_type.clone());
-                        match component_type {
-                            ComponentTypes::Genesis => { 
-                                blockchain.genesis = Some(block::Block::from_bytes(&component_bytes));
-                                info!("Stored genesis block");
+                        if blockchain.updating_state {
+                            blockchain.components_received.insert(component_type.clone());
+                            match component_type {
+                                ComponentTypes::Genesis => { 
+                                    blockchain.genesis = Some(block::Block::from_bytes(&component_bytes));
+                                    info!("Stored genesis block");
+                                }
+                                ComponentTypes::Child => { 
+                                    blockchain.child = Some(block::Block::from_bytes(&component_bytes));
+                                    info!("Stored child block");
+                                }
+                                ComponentTypes::Parent => { 
+                                    blockchain.parent = Some(block::Block::from_bytes(&component_bytes));
+                                    info!("Stored parent block"); 
+                                }
+                                ComponentTypes::Ledger => {
+                                    let new_ledger = Ledger::from_bytes(component_bytes);
+                                    blockchain_network_state.update_ledger(new_ledger);
+                                    info!("Stored ledger");
+                                }
+                                ComponentTypes::NetworkState => {
+                                    if let Ok(mut new_network_state) = NetworkState::from_bytes(component_bytes) {
+                                        new_network_state.path = blockchain_network_state.path;
+                                        blockchain_reward_state = new_network_state.reward_state.unwrap();
+                                        blockchain_network_state = new_network_state;
+                                        info!("Stored network state");
+                                    } 
+                                }
+                                _ => {}
                             }
-                            ComponentTypes::Child => { 
-                                blockchain.child = Some(block::Block::from_bytes(&component_bytes));
-                                info!("Stored child block");
-                            }
-                            ComponentTypes::Parent => { 
-                                blockchain.parent = Some(block::Block::from_bytes(&component_bytes));
-                                info!("Stored parent block"); 
-                            }
-                            ComponentTypes::Ledger => {
-                                let new_ledger = Ledger::from_bytes(component_bytes);
-                                blockchain_network_state.update_ledger(new_ledger);
-                                info!("Stored ledger");
-                            }
-                            ComponentTypes::NetworkState => {
-                                if let Ok(mut new_network_state) = NetworkState::from_bytes(component_bytes) {
-                                    new_network_state.path = blockchain_network_state.path;
-                                    blockchain_reward_state = new_network_state.reward_state.unwrap();
-                                    blockchain_network_state = new_network_state;
-                                    info!("Stored network state");
-                                } 
-                            }
-                            _ => {}
-                        }
 
-                        if blockchain.received_core_components() {
-                            if let Err(e) = blockchain_sender.send(Command::ProcessBacklog) {
-                                info!("Error sending process backlog command to blockchain receiver: {:?}", e);
+                            if blockchain.received_core_components() {
+                                blockchain.updating_state = false;
+                                if let Err(e) = blockchain_sender.send(Command::ProcessBacklog) {
+                                    info!("Error sending process backlog command to blockchain receiver: {:?}", e);
+                                }
+                                blockchain.processing_backlog = true;
+                                if let Err(e) = app_sender
+                                    .send(Command::UpdateAppBlockchain(blockchain.clone().as_bytes()))
+                                {
+                                    info!("Error sending updated blockchain to app: {:?}", e);
+                                }
+                            } else {
+                                if blockchain.request_again() {
+                                    let missing = blockchain.check_missing_components();
+                                    info!("Missing Components: {:?}", missing);
+                                }
+                            }
+                        }
+                    }
+                    Command::ProcessBacklog => {
+                        if blockchain.processing_backlog {
+                            let last_block = blockchain.clone().child.unwrap();
+                            while let Some((_, block)) = blockchain.future_blocks.pop_front() {
+                                if last_block.header.block_height >= block.header.block_height {
+                                    info!("Block already processed, skipping")
+                                } else {
+                                    info!("Processing backlog block: {:?}", block.header.block_height);
+                                    if let Err(e) = blockchain.process_block(
+                                        &blockchain_network_state,
+                                        &blockchain_reward_state,
+                                        &block,
+                                    ) {
+                                        info!(
+                                            "Error trying to process backlogged future blocks: {:?} -> {:?}",
+                                            e,
+                                            block,
+                                        );
+                                    } else {
+                                        blockchain_network_state.dump(
+                                            &block.txns,
+                                            block.header.block_reward.clone(),
+                                            &block.claims,
+                                            block.header.claim.clone(),
+                                            &block.hash,
+                                        );
+                                        info!("Processed and confirmed backlog block: {:?}", block.header.block_height);
+                                        if let Err(e) = miner_sender
+                                            .send(Command::ConfirmedBlock(block.clone().as_bytes()))
+                                        {
+                                            info!(
+                                                "Error sending confirmed backlog block to miner: {:?}",
+                                                e
+                                            );
+                                        }
+
+                                        if let Err(e) = app_sender.send(Command::UpdateAppBlockchain(
+                                            blockchain.clone().as_bytes(),
+                                        )) {
+                                            info!("Error sending blockchain to app: {:?}", e);
+                                        }
+                                    }
+                                }
+                            }
+                            info!("Backlog processed");
+
+                            if let Err(e) = miner_sender.send(Command::StateUpdateCompleted(
+                                blockchain_network_state.clone().as_bytes(),
+                            )) {
+                                info!("Error sending updated network state to miner: {:?}", e);
                             }
 
                             if let Err(e) = app_sender
@@ -765,70 +832,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             {
                                 info!("Error sending updated blockchain to app: {:?}", e);
                             }
-                        } else {
-                            if blockchain.request_again() {
-                                let missing = blockchain.check_missing_components();
-                                info!("Missing Components: {:?}", missing);
-                            }
+                            blockchain.processing_backlog = false;
                         }
-                    }
-                    Command::ProcessBacklog => {
-                        let last_block = blockchain.clone().child.unwrap();
-                        while let Some((_, block)) = blockchain.future_blocks.pop_front() {
-                            if last_block.header.block_height >= block.header.block_height {
-                                info!("Block already processed, skipping")
-                            } else {
-                                info!("Processing backlog block: {:?}", block.header.block_height);
-                                if let Err(e) = blockchain.process_block(
-                                    &blockchain_network_state,
-                                    &blockchain_reward_state,
-                                    &block,
-                                ) {
-                                    info!(
-                                        "Error trying to process backlogged future blocks: {:?} -> {:?}",
-                                        e,
-                                        block,
-                                    );
-                                } else {
-                                    blockchain_network_state.dump(
-                                        &block.txns,
-                                        block.header.block_reward.clone(),
-                                        &block.claims,
-                                        block.header.claim.clone(),
-                                        &block.hash,
-                                    );
-                                    info!("Processed and confirmed backlog block: {:?}", block.header.block_height);
-                                    if let Err(e) = miner_sender
-                                        .send(Command::ConfirmedBlock(block.clone().as_bytes()))
-                                    {
-                                        info!(
-                                            "Error sending confirmed backlog block to miner: {:?}",
-                                            e
-                                        );
-                                    }
-
-                                    if let Err(e) = app_sender.send(Command::UpdateAppBlockchain(
-                                        blockchain.clone().as_bytes(),
-                                    )) {
-                                        info!("Error sending blockchain to app: {:?}", e);
-                                    }
-                                }
-                            }
-                        }
-                        info!("Backlog processed");
-
-                        if let Err(e) = miner_sender.send(Command::StateUpdateCompleted(
-                            blockchain_network_state.clone().as_bytes(),
-                        )) {
-                            info!("Error sending updated network state to miner: {:?}", e);
-                        }
-
-                        if let Err(e) = app_sender
-                            .send(Command::UpdateAppBlockchain(blockchain.clone().as_bytes()))
-                        {
-                            info!("Error sending updated blockchain to app: {:?}", e);
-                        }
-                        blockchain.updating_state = false;
                     }
                     Command::StateUpdateCompleted(network_state) => {
                         if let Ok(updated_network_state) = NetworkState::from_bytes(network_state) {
