@@ -1320,27 +1320,121 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 Command::RequestedComponents(requestor, components, sender_id) => {
-                    let message = MessageType::StateComponentsMessage {
-                        data: components,
+                    let restructured_components = Components::from_bytes(&components);
+                    info!("Gathered components: {:?}", restructured_components);
+                    let head = Header::Gossip;
+                    let genesis_message = MessageType::GenesisMessage {
+                        data: restructured_components.genesis.unwrap(),
                         requestor: requestor.clone(),
                         sender_id: state_node_id.clone(),
                     };
 
-                    let head = Header::Gossip;
-                    let msg_id = MessageKey::rand();
-                    let gossip_msg = GossipMessage {
-                        id: msg_id.inner(),
-                        data: message.as_bytes(),
-                        sender: addr.clone()
+                    let child_message = MessageType::ChildMessage {
+                        data: restructured_components.child.unwrap(),
+                        requestor: requestor.clone(),
+                        sender_id: state_node_id.clone(),
                     };
-                    let msg = Message {
-                        head,
-                        msg: gossip_msg.as_bytes().unwrap()
+
+                    let parent_message = MessageType::ParentMessage {
+                        data: restructured_components.parent.unwrap(),
+                        requestor: requestor.clone(),
+                        sender_id: state_node_id.clone(),
                     };
+
+                    let ledger_message = MessageType::LedgerMessage {
+                        data: restructured_components.ledger.unwrap(),
+                        requestor: requestor.clone(),
+                        sender_id: state_node_id.clone(),
+                    };
+
+                    let network_state_message = MessageType::NetworkStateMessage {
+                        data: restructured_components.network_state.unwrap(),
+                        requestor: requestor.clone(),
+                        sender_id: state_node_id.clone(),
+                    };
+
+                    
+                    let genesis_msg_id = MessageKey::rand();
+                    let child_msg_id = MessageKey::rand();
+                    let parent_msg_id = MessageKey::rand();
+                    let ledger_msg_id = MessageKey::rand();
+                    let network_state_msg_id = MessageKey::rand();
+                    
+                    let genesis_gossip_message = GossipMessage {
+                        id: genesis_msg_id.inner(),
+                        data: genesis_message.as_bytes(),
+                        sender: addr.clone(),
+                    };
+
+                    let child_gossip_message = GossipMessage {
+                        id: child_msg_id.inner(),
+                        data: child_message.as_bytes(),
+                        sender: addr.clone(),
+                    };
+
+                    let parent_gossip_message = GossipMessage {
+                        id: parent_msg_id.inner(),
+                        data: parent_message.as_bytes(),
+                        sender: addr.clone(),
+                    };
+
+                    let ledger_gossip_message = GossipMessage {
+                        id: ledger_msg_id.inner(),
+                        data: ledger_message.as_bytes(),
+                        sender: addr.clone(),
+                    };
+                    
+                    let network_state_gossip_message = GossipMessage {
+                        id: network_state_msg_id.inner(),
+                        data: network_state_message.as_bytes(),
+                        sender: addr.clone(),
+                    };
+
+                    
+                    let genesis_msg = Message {
+                        head: head.clone(),
+                        msg: genesis_gossip_message.as_bytes().unwrap()
+                    };
+
+                    let child_msg = Message {
+                        head: head.clone(),
+                        msg: child_gossip_message.as_bytes().unwrap()
+                    };
+
+                    let parent_msg = Message {
+                        head: head.clone(),
+                        msg: parent_gossip_message.as_bytes().unwrap()
+                    };
+                    
+                    let ledger_msg = Message {
+                        head: head.clone(),
+                        msg: ledger_gossip_message.as_bytes().unwrap()
+                    };
+                    
+                    let network_state_msg = Message {
+                        head: head.clone(),
+                        msg: network_state_gossip_message.as_bytes().unwrap()
+                    };                    
 
                     let requestor_addr: SocketAddr = requestor.parse().expect("Unable to parse address");
+                    
+                    if let Err(e) = gossip_sender.send((addr.clone(), genesis_msg)) {
+                        info!("Unable to forward state component message to gossip thread");
+                    }
 
-                    if let Err(e) = gossip_sender.send((addr.clone(), msg)) {
+                    if let Err(e) = gossip_sender.send((addr.clone(), child_msg)) {
+                        info!("Unable to forward state component message to gossip thread");
+                    }
+
+                    if let Err(e) = gossip_sender.send((addr.clone(), parent_msg)) {
+                        info!("Unable to forward state component message to gossip thread");
+                    }
+
+                    if let Err(e) = gossip_sender.send((addr.clone(), ledger_msg)) {
+                        info!("Unable to forward state component message to gossip thread");
+                    }
+
+                    if let Err(e) = gossip_sender.send((addr.clone(), network_state_msg)) {
                         info!("Unable to forward state component message to gossip thread");
                     }
                 }
