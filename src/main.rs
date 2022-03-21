@@ -14,6 +14,7 @@ use log::info;
 use messages::message_types::MessageType;
 use miner::miner::Miner;
 use network::components::StateComponent;
+use commands::command::ComponentTypes;
 use node::handler::{CommandHandler, MessageHandler};
 use node::node::{Node, NodeAuth};
 use public_ip;
@@ -721,53 +722,76 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             _ => {}
                         }
                     }
-                    Command::StateUpdateComponents(components_bytes) => {
-                        let components = Components::from_bytes(&components_bytes);
-                        if let Some(bytes) = components.genesis {
-                            blockchain.genesis = Some(block::Block::from_bytes(&bytes))
+                    Command::StateUpdateComponents(component_bytes, component_type) => {
+                        blockchain.components_received.insert(component_type.clone());
+                        match component_type {
+                            ComponentTypes::Genesis => { 
+                                blockchain.genesis = Some(block::Block::from_bytes(&component_bytes));
+                            }
+                            ComponentTypes::Child => { blockchain.child = Some(block::Block::from_bytes(&component_bytes)) }
+                            ComponentTypes::Parent => { blockchain.parent = Some(block::Block::from_bytes(&component_bytes)) }
+                            ComponentTypes::Ledger => {
+                                let new_ledger = Ledger::from_bytes(component_bytes);
+                                blockchain_network_state.update_ledger(new_ledger);
+                            }
+                            ComponentTypes::NetworkState => {
+                                if let Ok(mut new_network_state) = NetworkState::from_bytes(component_bytes) {
+                                    new_network_state.path = blockchain_network_state.path;
+                                    blockchain_reward_state = new_network_state.reward_state.unwrap();
+                                    blockchain_network_state = new_network_state;
+                                } 
+                            }
+                            _ => {}
                         }
+                        // let components = Components::from_bytes(&components_bytes);
+                        // if let Some(bytes) = components.genesis {
+                        //     blockchain.genesis = Some(block::Block::from_bytes(&bytes))
+                        // }
 
-                        if let Some(bytes) = components.child {
-                            blockchain.child = Some(block::Block::from_bytes(&bytes))
-                        }
-                        if let Some(bytes) = components.parent {
-                            blockchain.parent = Some(block::Block::from_bytes(&bytes))
-                        }
-                        if let Some(bytes) = components.blockchain {
-                            let mut new_blockchain = Blockchain::from_bytes(&bytes);
-                            new_blockchain.future_blocks = blockchain.clone().future_blocks;
-                            new_blockchain.chain_db = blockchain.clone().chain_db;
-                            blockchain = new_blockchain;
-                        }
-                        if let Some(bytes) = components.network_state {
-                            if let Ok(mut new_network_state) = NetworkState::from_bytes(bytes) {
-                                new_network_state.path = blockchain_network_state.path;
-                                blockchain_reward_state = new_network_state.reward_state.unwrap();
-                                blockchain_network_state = new_network_state;
+                        // if let Some(bytes) = components.child {
+                        //     blockchain.child = Some(block::Block::from_bytes(&bytes))
+                        // }
+                        // if let Some(bytes) = components.parent {
+                        //     blockchain.parent = Some(block::Block::from_bytes(&bytes))
+                        // }
+                        // if let Some(bytes) = components.blockchain {
+                        //     let mut new_blockchain = Blockchain::from_bytes(&bytes);
+                        //     new_blockchain.future_blocks = blockchain.clone().future_blocks;
+                        //     new_blockchain.chain_db = blockchain.clone().chain_db;
+                        //     blockchain = new_blockchain;
+                        // }
+                        // if let Some(bytes) = components.network_state {
+                        //     if let Ok(mut new_network_state) = NetworkState::from_bytes(bytes) {
+                        //         new_network_state.path = blockchain_network_state.path;
+                        //         blockchain_reward_state = new_network_state.reward_state.unwrap();
+                        //         blockchain_network_state = new_network_state;
+                        //     }
+                        // }
+
+                        // if let Some(bytes) = components.ledger {
+                        //     let new_ledger = Ledger::from_bytes(bytes);
+                        //     blockchain_network_state.update_ledger(new_ledger);
+                        // }
+
+                        // if let Some(bytes) = components.archive {
+                        //     let mut new_db = blockchain.chain_db_from_bytes(&bytes);
+                        //     if let Err(e) = new_db.dump() {
+                        //         info!("Error dumping db update: {:?}", e);
+                        //     }
+                        // }
+
+                        if blockchain.received_core_components() {
+                            if let Err(e) = blockchain_sender.send(Command::ProcessBacklog) {
+                                info!("Error sending process backlog command to blockchain receiver: {:?}", e);
+                            }
+
+                            if let Err(e) = app_sender
+                                .send(Command::UpdateAppBlockchain(blockchain.clone().as_bytes()))
+                            {
+                                info!("Error sending updated blockchain to app: {:?}", e);
                             }
                         }
 
-                        if let Some(bytes) = components.ledger {
-                            let new_ledger = Ledger::from_bytes(bytes);
-                            blockchain_network_state.update_ledger(new_ledger);
-                        }
-
-                        if let Some(bytes) = components.archive {
-                            let mut new_db = blockchain.chain_db_from_bytes(&bytes);
-                            if let Err(e) = new_db.dump() {
-                                info!("Error dumping db update: {:?}", e);
-                            }
-                        }
-
-                        if let Err(e) = blockchain_sender.send(Command::ProcessBacklog) {
-                            info!("Error sending process backlog command to blockchain receiver: {:?}", e);
-                        }
-
-                        if let Err(e) = app_sender
-                            .send(Command::UpdateAppBlockchain(blockchain.clone().as_bytes()))
-                        {
-                            info!("Error sending updated blockchain to app: {:?}", e);
-                        }
                     }
                     Command::ProcessBacklog => {
                         let last_block = blockchain.clone().child.unwrap();
@@ -1321,7 +1345,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Command::RequestedComponents(requestor, components, sender_id) => {
                     let restructured_components = Components::from_bytes(&components);
-                    info!("Gathered components: {:?}", restructured_components);
                     let head = Header::Gossip;
                     let genesis_message = MessageType::GenesisMessage {
                         data: restructured_components.genesis.unwrap(),
