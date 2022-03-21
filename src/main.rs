@@ -671,7 +671,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
-                    Command::GetStateComponents(requestor, components_bytes) => {
+                    Command::GetStateComponents(requestor, components_bytes, sender_id) => {
                         info!("Received request for State update");
                         let components = StateComponent::from_bytes(&components_bytes);
                         match components {
@@ -710,6 +710,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 if let Err(e) = state_sender.send(Command::RequestedComponents(
                                     requestor,
                                     components.as_bytes(),
+                                    sender_id
                                 )) {
                                     info!(
                                         "Error sending requested components to state receiver: {:?}",
@@ -1313,31 +1314,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Ok(command) = to_state_receiver.try_recv() {
             match command {
                 Command::SendStateComponents(requestor, component_bytes, sender_id) => {
-                    let component = StateComponent::from_bytes(&component_bytes);
+                    let command = Command::GetStateComponents(requestor, component_bytes, sender_id);
+                    if let Err(e) = blockchain_sender.send(command) {
+                        info!("Error sending component request to blockchain thread: {:?}", e);
+                    }
+                }
+                Command::RequestedComponents(requestor, components, sender_id) => {
                     let message = MessageType::StateComponentsMessage {
-                        data: component_bytes,
-                        requestor: requestor,
-                        sender_id: sender_id,
+                        data: components,
+                        requestor: requestor.clone(),
+                        sender_id: state_node_id.clone(),
                     };
 
                     let head = Header::Gossip;
-                    
                     let msg_id = MessageKey::rand();
                     let gossip_msg = GossipMessage {
                         id: msg_id.inner(),
                         data: message.as_bytes(),
                         sender: addr.clone()
                     };
-
                     let msg = Message {
                         head,
                         msg: gossip_msg.as_bytes().unwrap()
                     };
-                    // TODO: Replace the below with sending to the correct channel                                                
-                    if let Err(e) =
-                        gossip_sender.send((addr.clone(), msg))
-                    {
-                        info!("Error sending ClaimAbandoned message to swarm: {:?}", e);
+
+                    let requestor_addr: SocketAddr = requestor.parse().expect("Unable to parse address");
+
+                    if let Err(e) = gossip_sender.send((addr.clone(), msg)) {
+                        info!("Unable to forward state component message to gossip thread");
                     }
                 }
                 _ => {

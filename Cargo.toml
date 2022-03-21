@@ -44,7 +44,7 @@ strum_macros = "0.21.0"
 unicode-width = "0.1.9"
 clipboard = "0.5.0"
 public-ip = "0.2.1"
-udp2p = "0.1.5"
+udp2p = "0.1.6"
 network = { path = "../network" }
 node = { path = "../node" }
 commands = { path = "../commands" }
