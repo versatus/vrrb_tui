@@ -542,6 +542,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 };
 
                                                 blockchain.updating_state = true;
+                                                blockchain.started_updating = Some(udp2p::utils::utils::timestamp_now());
                                             }
                                         }
                                     }
@@ -722,7 +723,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             _ => {}
                         }
                     }
-                    Command::StateUpdateComponents(component_bytes, component_type) => {
+                    Command::StoreStateComponents(component_bytes, component_type) => {
                         blockchain.components_received.insert(component_type.clone());
                         match component_type {
                             ComponentTypes::Genesis => { 
@@ -791,7 +792,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 info!("Error sending updated blockchain to app: {:?}", e);
                             }
                         }
-
                     }
                     Command::ProcessBacklog => {
                         let last_block = blockchain.clone().child.unwrap();
@@ -1341,6 +1341,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let command = Command::GetStateComponents(requestor, component_bytes, sender_id);
                     if let Err(e) = blockchain_sender.send(command) {
                         info!("Error sending component request to blockchain thread: {:?}", e);
+                    }
+                }
+                Command::StoreStateComponents(data, component_type) => {
+                    if let Err(e) = blockchain_sender.send(Command::StoreStateComponents(data, component_type)) {
+                        info!("Error sending component to blockchain")
                     }
                 }
                 Command::RequestedComponents(requestor, components, sender_id) => {
