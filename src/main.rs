@@ -754,42 +754,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             _ => {}
                         }
-                        // let components = Components::from_bytes(&components_bytes);
-                        // if let Some(bytes) = components.genesis {
-                        //     blockchain.genesis = Some(block::Block::from_bytes(&bytes))
-                        // }
-
-                        // if let Some(bytes) = components.child {
-                        //     blockchain.child = Some(block::Block::from_bytes(&bytes))
-                        // }
-                        // if let Some(bytes) = components.parent {
-                        //     blockchain.parent = Some(block::Block::from_bytes(&bytes))
-                        // }
-                        // if let Some(bytes) = components.blockchain {
-                        //     let mut new_blockchain = Blockchain::from_bytes(&bytes);
-                        //     new_blockchain.future_blocks = blockchain.clone().future_blocks;
-                        //     new_blockchain.chain_db = blockchain.clone().chain_db;
-                        //     blockchain = new_blockchain;
-                        // }
-                        // if let Some(bytes) = components.network_state {
-                        //     if let Ok(mut new_network_state) = NetworkState::from_bytes(bytes) {
-                        //         new_network_state.path = blockchain_network_state.path;
-                        //         blockchain_reward_state = new_network_state.reward_state.unwrap();
-                        //         blockchain_network_state = new_network_state;
-                        //     }
-                        // }
-
-                        // if let Some(bytes) = components.ledger {
-                        //     let new_ledger = Ledger::from_bytes(bytes);
-                        //     blockchain_network_state.update_ledger(new_ledger);
-                        // }
-
-                        // if let Some(bytes) = components.archive {
-                        //     let mut new_db = blockchain.chain_db_from_bytes(&bytes);
-                        //     if let Err(e) = new_db.dump() {
-                        //         info!("Error dumping db update: {:?}", e);
-                        //     }
-                        // }
 
                         if blockchain.received_core_components() {
                             if let Err(e) = blockchain_sender.send(Command::ProcessBacklog) {
@@ -800,6 +764,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .send(Command::UpdateAppBlockchain(blockchain.clone().as_bytes()))
                             {
                                 info!("Error sending updated blockchain to app: {:?}", e);
+                            }
+                        } else {
+                            if blockchain.request_again() {
+                                let missing = blockchain.check_missing_components();
+                                info!("Missing Components: {:?}", missing);
                             }
                         }
                     }
