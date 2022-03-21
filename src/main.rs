@@ -729,28 +729,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             blockchain.components_received.insert(component_type.clone());
                             match component_type {
                                 ComponentTypes::Genesis => { 
-                                    blockchain.genesis = Some(block::Block::from_bytes(&component_bytes));
-                                    info!("Stored genesis block");
+                                    if let None = blockchain.check_missing_genesis() {
+                                        blockchain.genesis = Some(block::Block::from_bytes(&component_bytes));
+                                        info!("Stored genesis block");
+                                    }
                                 }
                                 ComponentTypes::Child => { 
-                                    blockchain.child = Some(block::Block::from_bytes(&component_bytes));
-                                    info!("Stored child block");
+                                    if let None = blockchain.check_missing_child() {
+                                        blockchain.child = Some(block::Block::from_bytes(&component_bytes));
+                                        info!("Stored child block");
+                                    }
                                 }
                                 ComponentTypes::Parent => { 
-                                    blockchain.parent = Some(block::Block::from_bytes(&component_bytes));
-                                    info!("Stored parent block"); 
+                                    if let None = blockchain.check_missing_parent() {
+                                        blockchain.parent = Some(block::Block::from_bytes(&component_bytes));
+                                        info!("Stored parent block"); 
+                                    }
                                 }
                                 ComponentTypes::Ledger => {
-                                    let new_ledger = Ledger::from_bytes(component_bytes);
-                                    blockchain_network_state.update_ledger(new_ledger);
-                                    info!("Stored ledger");
+                                    if let None = blockchain.check_missing_ledger() {
+                                        let new_ledger = Ledger::from_bytes(component_bytes);
+                                        blockchain_network_state.update_ledger(new_ledger);
+                                        info!("Stored ledger");
+                                    }
                                 }
                                 ComponentTypes::NetworkState => {
-                                    if let Ok(mut new_network_state) = NetworkState::from_bytes(component_bytes) {
-                                        new_network_state.path = blockchain_network_state.path;
-                                        blockchain_reward_state = new_network_state.reward_state.unwrap();
-                                        blockchain_network_state = new_network_state;
-                                        info!("Stored network state");
+                                    if let None = blockchain.check_missing_state() {
+                                        if let Ok(mut new_network_state) = NetworkState::from_bytes(component_bytes) {
+                                            new_network_state.path = blockchain_network_state.path;
+                                            blockchain_reward_state = new_network_state.reward_state.unwrap();
+                                            blockchain_network_state = new_network_state;
+                                            info!("Stored network state");
+                                        }
                                     } 
                                 }
                                 _ => {}
@@ -771,6 +781,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 if blockchain.request_again() {
                                     let missing = blockchain.check_missing_components();
                                     info!("Missing Components: {:?}", missing);
+                                    blockchain.components_received = HashSet::new();
                                 }
                             }
                         }
