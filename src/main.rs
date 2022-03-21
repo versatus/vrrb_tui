@@ -1312,9 +1312,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let gossip_sender = state_to_gossip_sender.clone();
         if let Ok(command) = to_state_receiver.try_recv() {
             match command {
-                Command::SendStateComponents(requestor, component_bytes) => {
+                Command::SendStateComponents(requestor, component_bytes, sender_id) => {
                     let component = StateComponent::from_bytes(&component_bytes);
-                    info!("{:?}", component);
+                    let message = MessageType::StateComponentsMessage {
+                        data: component_bytes,
+                        requestor: requestor,
+                        sender_id: sender_id,
+                    };
+
+                    let head = Header::Gossip;
+                    
+                    let msg_id = MessageKey::rand();
+                    let gossip_msg = GossipMessage {
+                        id: msg_id.inner(),
+                        data: message.as_bytes(),
+                        sender: addr.clone()
+                    };
+
+                    let msg = Message {
+                        head,
+                        msg: gossip_msg.as_bytes().unwrap()
+                    };
+                    // TODO: Replace the below with sending to the correct channel                                                
+                    if let Err(e) =
+                        gossip_sender.send((addr.clone(), msg))
+                    {
+                        info!("Error sending ClaimAbandoned message to swarm: {:?}", e);
+                    }
                 }
                 _ => {
                     info!("Received State Command: {:?}", command);
