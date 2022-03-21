@@ -548,7 +548,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                     InvalidBlockErrorReason::NotTallestChain => {
                                         // Inform the miner they are missing blocks
-                                        info!("Error: {:?}", e);
+                                        // info!("Error: {:?}", e);
 
                                     }
                                     _ => {
@@ -809,6 +809,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if last_block.header.block_height >= block.header.block_height {
                                 info!("Block already processed, skipping")
                             } else {
+                                info!("Processing backlog block: {:?}", block.header.block_height);
                                 if let Err(e) = blockchain.process_block(
                                     &blockchain_network_state,
                                     &blockchain_reward_state,
@@ -827,6 +828,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         block.header.claim.clone(),
                                         &block.hash,
                                     );
+                                    info!("Processed and confirmed backlog block: {:?}", block.header.block_height);
                                     if let Err(e) = miner_sender
                                         .send(Command::ConfirmedBlock(block.clone().as_bytes()))
                                     {
