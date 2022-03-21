@@ -712,7 +712,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 if let Err(e) = state_sender.send(Command::RequestedComponents(
                                     requestor,
                                     components.as_bytes(),
-                                    sender_id
+                                    sender_id.clone(),
+                                    blockchain_node_id.clone()
                                 )) {
                                     info!(
                                         "Error sending requested components to state receiver: {:?}",
@@ -1357,36 +1358,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         info!("Error sending component to blockchain")
                     }
                 }
-                Command::RequestedComponents(requestor, components, sender_id) => {
+                Command::RequestedComponents(requestor, components, sender_id, requestor_id) => {
                     let restructured_components = Components::from_bytes(&components);
                     let head = Header::Gossip;
                     let genesis_message = MessageType::GenesisMessage {
                         data: restructured_components.genesis.unwrap(),
                         requestor: requestor.clone(),
+                        requestor_id: requestor_id.clone(),
                         sender_id: state_node_id.clone(),
                     };
 
                     let child_message = MessageType::ChildMessage {
                         data: restructured_components.child.unwrap(),
                         requestor: requestor.clone(),
+                        requestor_id: requestor_id.clone(),
                         sender_id: state_node_id.clone(),
                     };
 
                     let parent_message = MessageType::ParentMessage {
                         data: restructured_components.parent.unwrap(),
                         requestor: requestor.clone(),
+                        requestor_id: requestor_id.clone(),
                         sender_id: state_node_id.clone(),
                     };
 
                     let ledger_message = MessageType::LedgerMessage {
                         data: restructured_components.ledger.unwrap(),
                         requestor: requestor.clone(),
+                        requestor_id: requestor_id.clone(),
                         sender_id: state_node_id.clone(),
                     };
 
                     let network_state_message = MessageType::NetworkStateMessage {
                         data: restructured_components.network_state.unwrap(),
                         requestor: requestor.clone(),
+                        requestor_id: requestor_id.clone(),
                         sender_id: state_node_id.clone(),
                     };
 
