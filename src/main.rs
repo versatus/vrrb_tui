@@ -512,7 +512,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 let component = StateComponent::All;
                                                 let message = MessageType::GetNetworkStateMessage {
                                                     sender_id: blockchain_node_id.clone(),
-                                                    requested_from: sender_id,
+                                                    requested_from: sender_id.clone(),
                                                     requestor_address: addr.clone(),
                                                     requestor_node_type: node_type
                                                         .clone()
@@ -543,6 +543,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                                 blockchain.updating_state = true;
                                                 blockchain.started_updating = Some(udp2p::utils::utils::timestamp_now());
+                                            }
+                                        } else if blockchain.updating_state {
+                                            if blockchain.received_core_components() {
+                                                blockchain.updating_state = false;
+                                                if let Err(e) = blockchain_sender.send(Command::ProcessBacklog) {
+                                                    info!("Error sending process backlog command to blockchain receiver: {:?}", e);
+                                                }
+                                                blockchain.processing_backlog = true;
+                                                if let Err(e) = app_sender
+                                                    .send(Command::UpdateAppBlockchain(blockchain.clone().as_bytes()))
+                                                {
+                                                    info!("Error sending updated blockchain to app: {:?}", e);
+                                                }
+                                            } else {
+                                                if blockchain.request_again() {
+                                                    if let Some((_, v)) = blockchain.future_blocks.front() {
+                                                        let component = StateComponent::All;
+                                                        let message = MessageType::GetNetworkStateMessage {
+                                                            sender_id: blockchain_node_id.clone(),
+                                                            requested_from: sender_id.clone(),
+                                                            requestor_address: addr.clone(),
+                                                            requestor_node_type: node_type
+                                                                .clone()
+                                                                .as_bytes(),
+                                                            lowest_block: v.header.block_height,
+                                                            component: component.as_bytes(),
+                                                        };
+                                                        let missing = blockchain.check_missing_components();
+                                                        info!("Missing Components: {:?}", missing);
+                                                        blockchain.components_received = HashSet::new();
+                                                        let msg_id = MessageKey::rand();
+                                                        let head = Header::Gossip;
+                                                        let gossip_msg = GossipMessage {
+                                                            id: msg_id.inner(),
+                                                            data: message.as_bytes(),
+                                                            sender: addr.clone()
+                                                        };
+
+                                                        let msg = Message {
+                                                            head,
+                                                            msg: gossip_msg.as_bytes().unwrap()
+                                                        };
+                                                    }
+                                                }
                                             }
                                         }
                                     }
