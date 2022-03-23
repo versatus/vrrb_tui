@@ -537,27 +537,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     msg: gossip_msg.as_bytes().unwrap()
                                                 };
 
-                                                std::thread::spawn(|| {
+                                                let cloned_node_id = blockchain_node_id.clone();
+                                                std::thread::spawn(move || {
+                                                    let thread_node_id = cloned_node_id.clone();
                                                     let listener = std::net::TcpListener::bind("0.0.0.0:19291").unwrap();
                                                     info!("Opened TCP listener for state update");
                                                     for stream in listener.incoming() {
                                                         match stream {
                                                             Ok(mut stream) => {
                                                                 info!("New connection: {}", stream.peer_addr().unwrap());
+                                                                    let inner_node_id = thread_node_id.clone();
                                                                     std::thread::spawn(move || {
                                                                         let mut buf = [0u8; 655360];
+                                                                        let mut bytes = vec![];
                                                                         let mut total = 0;
-                                                                        let mut start = 0;
-                                                                        loop {
+                                                                        'reader: loop {
                                                                             let res = stream.read(&mut buf);
-                                                                            info!("{:?}", res);
                                                                             if let Ok(size) = res {
                                                                                 total += size;
-                                                                                if let Some(head) = StateUpdateHead::from_bytes(&buf[0..size]) {
-                                                                                    info!("Message size is {}", head.0)
+                                                                                buf[0..size].iter().for_each(|byte| {
+                                                                                    bytes.push(*byte);
+                                                                                });
+                                                                                info!("Received total of {:?} bytes", total);
+                                                                                if size == 0 {
+                                                                                    info!("Received all bytes, reconstructing");
+                                                                                    if let Some(message) = Message::from_bytes(&bytes) {
+                                                                                        if let Some(gossip_msg) = GossipMessage::from_bytes(&message.msg) {                                                                        
+                                                                                            if let Some(message_type) = MessageType::from_bytes(&gossip_msg.data) {
+                                                                                                info!("{:?}", message_type);
+                                                                                                if let Some(command) = message::process_message(message_type, inner_node_id.clone(), addr.clone().to_string()) {
+                                                                                                    info!("Command: {:?}", command);
+                                                                                                }
+                                                                                            }
+                                                                                        };
+                                                                                    }
+                                                                                    break 'reader;
                                                                                 }
                                                                             }
                                                                         }
+                                                                        stream.shutdown(std::net::Shutdown::Both).expect("Unable to shutdown");
                                                                 });
                                                             }
                                                             Err(e) => {}
@@ -793,6 +811,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             info!("Stored network state");
                                         }
                                     } 
+                                }
+                                ComponentTypes::All => {
+                                    let components = Components::from_bytes(&component_bytes);
+                                    info!("Received Components: {:?}", components);
                                 }
                                 _ => {}
                             }
@@ -1415,6 +1437,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let n_bytes = msg_bytes.len();
                                     stream.write(&msg_bytes).unwrap();
                                     info!("Wrote {:?} bytes to tcp stream for requestor", n_bytes);
+                                    stream.shutdown(std::net::Shutdown::Both).expect("Unable to shutdown");
                                 }
                                 Err(_) => {}
                             }
