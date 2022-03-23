@@ -541,14 +541,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     for stream in listener.incoming() {
                                                         match stream {
                                                             Ok(mut stream) => {
-                                                                let mut buf = [0u8; 65536];
-                                                                match stream.read(&mut buf) {
-                                                                    Ok(size) => {
-                                                                        info!("Received some bytes via stream: {:?}", size);
-                                                                    }
-                                                                    Err(_) => {
-                                                                        info!("Error trying to receive some bytes");
-                                                                    }
+                                                                let mut buf = [0u8; 655360];
+                                                                while let Ok(size) = stream.read(&mut buf) {
+                                                                    info!("Received some bytes via stream: {:?}", size);
                                                                 }
                                                             }
                                                             Err(e) => {}
