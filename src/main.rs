@@ -61,6 +61,7 @@ use udp2p::utils::utils::ByteRep;
 use network::message;
 use std::io::{Read, Write};
 use std::net::{SocketAddrV4, SocketAddrV6};
+use state::state::StateUpdateHead;
 
 pub const VALIDATOR_THRESHOLD: f64 = 0.60;
 
@@ -542,15 +543,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     for stream in listener.incoming() {
                                                         match stream {
                                                             Ok(mut stream) => {
-                                                                let mut buf = [0u8; 655360];
-                                                                let mut total = 0;
-                                                                while let Ok(size) = stream.read(&mut buf) {
-                                                                    total += size;
-                                                                    if size == 3 {
-                                                                        info!("Received last bytes for this message");
-                                                                        info!("Total bytes for message = {:?}", total - 3);
-                                                                    }
-                                                                }
+                                                                info!("New connection: {}", stream.peer_addr().unwrap());
+                                                                    std::thread::spawn(move || {
+                                                                        let mut buf = [0u8; 655360];
+                                                                        let mut total = 0;
+                                                                        let mut start = 0;
+                                                                        loop {
+                                                                            let res = stream.read(&mut buf);
+                                                                            info!("{:?}", res);
+                                                                            if let Ok(size) = res {
+                                                                                total += size;
+                                                                                if let Some(head) = StateUpdateHead::from_bytes(&buf[0..size]) {
+                                                                                    info!("Message size is {}", head.0)
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                });
                                                             }
                                                             Err(e) => {}
                                                         }
@@ -1486,10 +1494,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     info!("Opened TCP stream and connected to requestor");
                                     for message in messages {
                                         let msg_bytes = message.as_bytes().unwrap();
+                                        let n_bytes = msg_bytes.len();
+                                        let head = StateUpdateHead(n_bytes as u16);
+                                        stream.write(&head.as_bytes()).unwrap();
                                         stream.write(&msg_bytes).unwrap();
-                                        info!("Wrote bytes to tcp stream for requestor");
-                                        let end_bytes = b"END";
-                                        stream.write(end_bytes).unwrap();
+                                        info!("Wrote {:?} bytes to tcp stream for requestor", n_bytes);
                                     }
                                 }
                                 Err(_) => {}
