@@ -538,12 +538,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                                 std::thread::spawn(|| {
                                                     let listener = std::net::TcpListener::bind("0.0.0.0:19291").unwrap();
+                                                    info!("Opened TCP listener for state update");
                                                     for stream in listener.incoming() {
                                                         match stream {
                                                             Ok(mut stream) => {
                                                                 let mut buf = [0u8; 655360];
+                                                                let mut total = 0;
                                                                 while let Ok(size) = stream.read(&mut buf) {
-                                                                    info!("Received some bytes via stream: {:?}", size);
+                                                                    total += size;
+                                                                    if size == 3 {
+                                                                        info!("Received last bytes for this message");
+                                                                        info!("Total bytes for message = {:?}", total - 3);
+                                                                    }
                                                                 }
                                                             }
                                                             Err(e) => {}
@@ -1470,16 +1476,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     
                     match requestor_addr {
                         SocketAddr::V4(v4) => {
+                            info!("Requestor is a v4 IP");
                             let ip = v4.ip().clone();
                             let port = 19291;
                             let new_addr = SocketAddrV4::new(ip, port);
                             let tcp_addr = SocketAddr::from(new_addr);
                             match std::net::TcpStream::connect(new_addr) {
                                 Ok(mut stream) => {
-
+                                    info!("Opened TCP stream and connected to requestor");
                                     for message in messages {
                                         let msg_bytes = message.as_bytes().unwrap();
                                         stream.write(&msg_bytes).unwrap();
+                                        info!("Wrote bytes to tcp stream for requestor");
+                                        let end_bytes = b"END";
+                                        stream.write(end_bytes).unwrap();
                                     }
                                 }
                                 Err(_) => {}
