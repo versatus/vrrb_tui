@@ -783,24 +783,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     if let Some(bytes) = components.genesis {
                                         let genesis = block::Block::from_bytes(&bytes);
                                         blockchain.genesis = Some(genesis);
+                                        info!("Stored Genesis: {:?}", blockchain.genesis);
                                     }
                                     if let Some(bytes) = components.child {
                                         let child = block::Block::from_bytes(&bytes);
                                         blockchain.child = Some(child);
+                                        info!("Stored child: {:?}", blockchain.child);
+
                                     }
                                     if let Some(bytes) = components.parent {
                                         let parent = block::Block::from_bytes(&bytes);
-                                    }
-                                    if let Some(bytes) = components.ledger {
-                                        let new_ledger = Ledger::from_bytes(bytes);
-                                        blockchain_network_state.update_ledger(new_ledger);
+                                        blockchain.parent = Some(parent);
+                                        info!("Stored parent: {:?}", blockchain.parent);
+
                                     }
                                     if let Some(bytes) = components.network_state {
                                         if let Ok(mut new_network_state) = NetworkState::from_bytes(component_bytes) {
                                             new_network_state.path = blockchain_network_state.path;
                                             blockchain_reward_state = new_network_state.reward_state.unwrap();
                                             blockchain_network_state = new_network_state;
+                                            info!("Stored network state: {:?}", blockchain_network_state);
                                         }
+                                    }
+                                    if let Some(bytes) = components.ledger {
+                                        let new_ledger = Ledger::from_bytes(bytes);
+                                        blockchain_network_state.update_ledger(new_ledger);
+                                        info!("Stored ledger: {:?}", blockchain_network_state.ledger);
                                     }
 
                                     info!("Received all core components");
