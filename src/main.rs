@@ -538,16 +538,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 };
 
                                                 let cloned_node_id = blockchain_node_id.clone();
+                                                let thread_blockchain_sender = blockchain_sender.clone();
                                                 std::thread::spawn(move || {
+                                                    
                                                     let thread_node_id = cloned_node_id.clone();
                                                     let listener = std::net::TcpListener::bind("0.0.0.0:19291").unwrap();
                                                     info!("Opened TCP listener for state update");
                                                     for stream in listener.incoming() {
+                                                        let loop_blockchain_sender = thread_blockchain_sender.clone();
                                                         match stream {
                                                             Ok(mut stream) => {
                                                                 info!("New connection: {}", stream.peer_addr().unwrap());
                                                                     let inner_node_id = thread_node_id.clone();
                                                                     std::thread::spawn(move || {
+                                                                        let stream_blockchain_sender = loop_blockchain_sender.clone();
                                                                         let mut buf = [0u8; 655360];
                                                                         let mut bytes = vec![];
                                                                         let mut total = 0;
@@ -566,7 +570,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                                                             if let Some(message_type) = MessageType::from_bytes(&gossip_msg.data) {
                                                                                                 info!("{:?}", message_type);
                                                                                                 if let Some(command) = message::process_message(message_type, inner_node_id.clone(), addr.clone().to_string()) {
-                                                                                                    info!("Command: {:?}", command);
+                                                                                                    if let Err(e) = stream_blockchain_sender.send(command) {
+                                                                                                        info!("Error sending command to blockchain");
+                                                                                                    }
                                                                                                 }
                                                                                             }
                                                                                         };
