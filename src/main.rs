@@ -59,6 +59,8 @@ use rand::thread_rng;
 use std::env::args;
 use udp2p::utils::utils::ByteRep;
 use network::message;
+use std::io::{Read, Write};
+use std::net::{SocketAddrV4, SocketAddrV6};
 
 pub const VALIDATOR_THRESHOLD: f64 = 0.60;
 
@@ -387,7 +389,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         loop {
             let local = addr.clone();
-            let mut buf = [0u8; 65536];
+            let mut buf = [0u8; 655360];
             message_handler.recv_msg(&thread_sock, &mut buf, addr.clone());
         }
     });
@@ -534,6 +536,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     msg: gossip_msg.as_bytes().unwrap()
                                                 };
 
+                                                std::thread::spawn(|| {
+                                                    let listener = std::net::TcpListener::bind("0.0.0.0:19291").unwrap();
+                                                    for stream in listener.incoming() {
+                                                        match stream {
+                                                            Ok(mut stream) => {
+                                                                let mut buf = [0u8; 65536];
+                                                                match stream.read(&mut buf) {
+                                                                    Ok(size) => {
+                                                                        info!("Received some bytes via stream: {:?}", size);
+                                                                    }
+                                                                    Err(_) => {
+                                                                        info!("Error trying to receive some bytes");
+                                                                    }
+                                                                }
+                                                            }
+                                                            Err(e) => {}
+                                                        }
+                                                    }
+                                                });
+                                                
                                                 info!("Requesting state update");
                                                 if let Err(e) = gossip_sender
                                                     .send((addr.clone(), msg))
@@ -543,50 +565,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                                 blockchain.updating_state = true;
                                                 blockchain.started_updating = Some(udp2p::utils::utils::timestamp_now());
-                                            }
-                                        } else if blockchain.updating_state {
-                                            if blockchain.received_core_components() {
-                                                blockchain.updating_state = false;
-                                                if let Err(e) = blockchain_sender.send(Command::ProcessBacklog) {
-                                                    info!("Error sending process backlog command to blockchain receiver: {:?}", e);
-                                                }
-                                                blockchain.processing_backlog = true;
-                                                if let Err(e) = app_sender
-                                                    .send(Command::UpdateAppBlockchain(blockchain.clone().as_bytes()))
-                                                {
-                                                    info!("Error sending updated blockchain to app: {:?}", e);
-                                                }
-                                            } else {
-                                                if blockchain.request_again() {
-                                                    if let Some((_, v)) = blockchain.future_blocks.front() {
-                                                        let component = StateComponent::All;
-                                                        let message = MessageType::GetNetworkStateMessage {
-                                                            sender_id: blockchain_node_id.clone(),
-                                                            requested_from: sender_id.clone(),
-                                                            requestor_address: addr.clone(),
-                                                            requestor_node_type: node_type
-                                                                .clone()
-                                                                .as_bytes(),
-                                                            lowest_block: v.header.block_height,
-                                                            component: component.as_bytes(),
-                                                        };
-                                                        let missing = blockchain.check_missing_components();
-                                                        info!("Missing Components: {:?}", missing);
-                                                        blockchain.components_received = HashSet::new();
-                                                        let msg_id = MessageKey::rand();
-                                                        let head = Header::Gossip;
-                                                        let gossip_msg = GossipMessage {
-                                                            id: msg_id.inner(),
-                                                            data: message.as_bytes(),
-                                                            sender: addr.clone()
-                                                        };
-
-                                                        let msg = Message {
-                                                            head,
-                                                            msg: gossip_msg.as_bytes().unwrap()
-                                                        };
-                                                    }
-                                                }
                                             }
                                         }
                                     }
@@ -811,6 +789,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
 
                             if blockchain.received_core_components() {
+                                info!("Received all core components");
                                 blockchain.updating_state = false;
                                 if let Err(e) = blockchain_sender.send(Command::ProcessBacklog) {
                                     info!("Error sending process backlog command to blockchain receiver: {:?}", e);
@@ -1489,28 +1468,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         head: head.clone(),
                         msg: network_state_gossip_message.as_bytes().unwrap()
                     };                    
+                    
+                    let messages: Vec<Message> = vec![genesis_msg, child_msg, parent_msg, ledger_msg, network_state_msg];
 
                     let requestor_addr: SocketAddr = requestor.parse().expect("Unable to parse address");
                     
-                    if let Err(e) = gossip_sender.send((addr.clone(), genesis_msg)) {
-                        info!("Unable to forward state component message to gossip thread");
-                    }
+                    match requestor_addr {
+                        SocketAddr::V4(v4) => {
+                            let ip = v4.ip().clone();
+                            let port = 19291;
+                            let new_addr = SocketAddrV4::new(ip, port);
+                            let tcp_addr = SocketAddr::from(new_addr);
+                            match std::net::TcpStream::connect(new_addr) {
+                                Ok(mut stream) => {
 
-                    if let Err(e) = gossip_sender.send((addr.clone(), child_msg)) {
-                        info!("Unable to forward state component message to gossip thread");
+                                    for message in messages {
+                                        let msg_bytes = message.as_bytes().unwrap();
+                                        stream.write(&msg_bytes).unwrap();
+                                    }
+                                }
+                                Err(_) => {}
+                            }
+                        }
+                        SocketAddr::V6(v6) => {}
                     }
-
-                    if let Err(e) = gossip_sender.send((addr.clone(), parent_msg)) {
-                        info!("Unable to forward state component message to gossip thread");
-                    }
-
-                    if let Err(e) = gossip_sender.send((addr.clone(), ledger_msg)) {
-                        info!("Unable to forward state component message to gossip thread");
-                    }
-
-                    if let Err(e) = gossip_sender.send((addr.clone(), network_state_msg)) {
-                        info!("Unable to forward state component message to gossip thread");
-                    }
+                    
+                    
                 }
                 _ => {
                     info!("Received State Command: {:?}", command);
