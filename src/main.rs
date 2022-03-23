@@ -1380,105 +1380,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Command::RequestedComponents(requestor, components, sender_id, requestor_id) => {
                     let restructured_components = Components::from_bytes(&components);
                     let head = Header::Gossip;
-                    let genesis_message = MessageType::GenesisMessage {
-                        data: restructured_components.genesis.unwrap(),
+                    let message = MessageType::StateComponentsMessage {
+                        data: restructured_components.as_bytes(),
                         requestor: requestor.clone(),
-                        requestor_id: requestor_id.clone(),
-                        sender_id: state_node_id.clone(),
+                        requestor_id: requestor_id,
+                        sender_id: sender_id
                     };
 
-                    let child_message = MessageType::ChildMessage {
-                        data: restructured_components.child.unwrap(),
-                        requestor: requestor.clone(),
-                        requestor_id: requestor_id.clone(),
-                        sender_id: state_node_id.clone(),
+                    let msg_id = MessageKey::rand();
+                    let gossip_msg = GossipMessage {
+                        id: msg_id.inner(),
+                        data: message.as_bytes(),
+                        sender: addr.clone()
                     };
 
-                    let parent_message = MessageType::ParentMessage {
-                        data: restructured_components.parent.unwrap(),
-                        requestor: requestor.clone(),
-                        requestor_id: requestor_id.clone(),
-                        sender_id: state_node_id.clone(),
+                    let msg = Message {
+                        head,
+                        msg: gossip_msg.as_bytes().unwrap()
                     };
-
-                    let ledger_message = MessageType::LedgerMessage {
-                        data: restructured_components.ledger.unwrap(),
-                        requestor: requestor.clone(),
-                        requestor_id: requestor_id.clone(),
-                        sender_id: state_node_id.clone(),
-                    };
-
-                    let network_state_message = MessageType::NetworkStateMessage {
-                        data: restructured_components.network_state.unwrap(),
-                        requestor: requestor.clone(),
-                        requestor_id: requestor_id.clone(),
-                        sender_id: state_node_id.clone(),
-                    };
-
-                    
-                    let genesis_msg_id = MessageKey::rand();
-                    let child_msg_id = MessageKey::rand();
-                    let parent_msg_id = MessageKey::rand();
-                    let ledger_msg_id = MessageKey::rand();
-                    let network_state_msg_id = MessageKey::rand();
-                    
-                    let genesis_gossip_message = GossipMessage {
-                        id: genesis_msg_id.inner(),
-                        data: genesis_message.as_bytes(),
-                        sender: addr.clone(),
-                    };
-
-                    let child_gossip_message = GossipMessage {
-                        id: child_msg_id.inner(),
-                        data: child_message.as_bytes(),
-                        sender: addr.clone(),
-                    };
-
-                    let parent_gossip_message = GossipMessage {
-                        id: parent_msg_id.inner(),
-                        data: parent_message.as_bytes(),
-                        sender: addr.clone(),
-                    };
-
-                    let ledger_gossip_message = GossipMessage {
-                        id: ledger_msg_id.inner(),
-                        data: ledger_message.as_bytes(),
-                        sender: addr.clone(),
-                    };
-                    
-                    let network_state_gossip_message = GossipMessage {
-                        id: network_state_msg_id.inner(),
-                        data: network_state_message.as_bytes(),
-                        sender: addr.clone(),
-                    };
-
-                    
-                    let genesis_msg = Message {
-                        head: head.clone(),
-                        msg: genesis_gossip_message.as_bytes().unwrap()
-                    };
-
-                    let child_msg = Message {
-                        head: head.clone(),
-                        msg: child_gossip_message.as_bytes().unwrap()
-                    };
-
-                    let parent_msg = Message {
-                        head: head.clone(),
-                        msg: parent_gossip_message.as_bytes().unwrap()
-                    };
-                    
-                    let ledger_msg = Message {
-                        head: head.clone(),
-                        msg: ledger_gossip_message.as_bytes().unwrap()
-                    };
-                    
-                    let network_state_msg = Message {
-                        head: head.clone(),
-                        msg: network_state_gossip_message.as_bytes().unwrap()
-                    };                    
-                    
-                    let messages: Vec<Message> = vec![genesis_msg, child_msg, parent_msg, ledger_msg, network_state_msg];
 
                     let requestor_addr: SocketAddr = requestor.parse().expect("Unable to parse address");
                     
@@ -1492,14 +1411,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             match std::net::TcpStream::connect(new_addr) {
                                 Ok(mut stream) => {
                                     info!("Opened TCP stream and connected to requestor");
-                                    for message in messages {
-                                        let msg_bytes = message.as_bytes().unwrap();
-                                        let n_bytes = msg_bytes.len();
-                                        let head = StateUpdateHead(n_bytes as u16);
-                                        stream.write(&head.as_bytes()).unwrap();
-                                        stream.write(&msg_bytes).unwrap();
-                                        info!("Wrote {:?} bytes to tcp stream for requestor", n_bytes);
-                                    }
+                                    let msg_bytes = msg.as_bytes().unwrap();
+                                    let n_bytes = msg_bytes.len();
+                                    stream.write(&msg_bytes).unwrap();
+                                    info!("Wrote {:?} bytes to tcp stream for requestor", n_bytes);
                                 }
                                 Err(_) => {}
                             }
