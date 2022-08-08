@@ -61,7 +61,6 @@ use udp2p::utils::utils::ByteRep;
 use network::message;
 use std::io::{Read, Write};
 use std::net::{SocketAddrV4, SocketAddrV6};
-use state::state::StateUpdateHead;
 
 pub const VALIDATOR_THRESHOLD: f64 = 0.60;
 
