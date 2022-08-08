@@ -1,3 +1,4 @@
+/// Render methods for the VRRB Terminal User Interface
 use events::events::VrrbNetworkEvent;
 use ritelinked::LinkedHashMap;
 use std::collections::LinkedList;
@@ -20,6 +21,7 @@ use state::state::NetworkState;
 use txn::txn::Txn;
 use wallet::wallet::WalletAccount;
 
+/// A custom error type for the event that the JSON data cannot be parsed or read
 #[derive(Error, Debug)]
 pub enum JsonError {
     #[error("Error reading the json file: {0}")]
@@ -28,6 +30,7 @@ pub enum JsonError {
     ParseJsonError(#[from] serde_json::Error),
 }
 
+/// Renders the home page of the VRRB Terminal User Interface
 pub fn render_home<'a>(addr: &String, wallet: &WalletAccount) -> Paragraph<'a> {
     let home = Paragraph::new(vec![
         Spans::from(vec![Span::raw("")]),
@@ -94,6 +97,7 @@ pub fn render_home<'a>(addr: &String, wallet: &WalletAccount) -> Paragraph<'a> {
     home
 }
 
+/// Renders the wallet data on the wallet page of the TUI
 pub fn render_wallet<'a>(
     wallet_list_state: &ListState,
     wallet_addresses: LinkedHashMap<u32, String>,
@@ -187,6 +191,7 @@ pub fn render_wallet<'a>(
     (list, wallet_detail)
 }
 
+/// Renders the Mining Data on the mining page of the VRRB TUI
 pub fn render_mining_data<'a>() -> List<'a> {
     let data = Block::default()
         .borders(Borders::ALL)
@@ -195,6 +200,7 @@ pub fn render_mining_data<'a>() -> List<'a> {
     list
 }
 
+/// Renders the network data on the network data tab of the VRRB TUI
 pub fn render_network_data<'a>(path: &String) -> List<'a> {
     let fields = Block::default()
         .borders(Borders::ALL)
@@ -226,6 +232,7 @@ pub fn render_network_data<'a>(path: &String) -> List<'a> {
     }
 }
 
+/// Renders the submenu list of the Chain for the VRRB TUI
 pub fn render_chain_list<'a>(blockchain_fields: &ListState, field_titles: Vec<String>) -> List<'a> {
     let fields = Block::default()
         .borders(Borders::ALL)
@@ -259,6 +266,7 @@ pub fn render_chain_list<'a>(blockchain_fields: &ListState, field_titles: Vec<St
     list
 }
 
+/// Renders the list and the data for the block headers for the entire current chain
 pub fn render_header_chain<'a>(
     last_hash_list_state: &ListState,
     chain: &LinkedList<BlockHeader>,
@@ -415,6 +423,7 @@ pub fn render_header_chain<'a>(
     (list, table)
 }
 
+/// Renders the table of the block data for a given block 
 pub fn render_block_table<'a>(block: &block::Block) -> Table<'a> {
     let header_style = Style::default()
         .add_modifier(Modifier::BOLD)
@@ -520,6 +529,7 @@ pub fn render_block_table<'a>(block: &block::Block) -> Table<'a> {
     first
 }
 
+/// Renders all invalid blocks
 pub fn render_invalid_blocks<'a>(
     invalid_block_list_state: &ListState,
     invalid_blocks: &LinkedHashMap<String, block::Block>,
@@ -583,6 +593,7 @@ pub fn render_invalid_blocks<'a>(
     (list, table)
 }
 
+/// Renders the command cache of recent commands input by the user of the TUI
 pub fn render_command_cache<'a>(command_cache: &Vec<String>) -> List<'a> {
     let commands = Block::default()
         .borders(Borders::ALL)
@@ -598,6 +609,7 @@ pub fn render_command_cache<'a>(command_cache: &Vec<String>) -> List<'a> {
     List::new(items).block(commands)
 }
 
+/// Renders an empty table
 pub fn render_empty_table<'a>() -> Table<'a> {
     let header_style = Style::default()
         .add_modifier(Modifier::BOLD)
@@ -617,6 +629,7 @@ pub fn render_empty_table<'a>() -> Table<'a> {
         .widths(&[Constraint::Percentage(20), Constraint::Percentage(80)])
 }
 
+/// Renders a list of all the fields of the miner as a sub menu to navigate
 pub fn render_miner_list<'a>(miner_fields: &ListState, field_titles: Vec<String>) -> List<'a> {
     let fields = Block::default()
         .borders(Borders::ALL)
@@ -650,6 +663,7 @@ pub fn render_miner_list<'a>(miner_fields: &ListState, field_titles: Vec<String>
     list
 }
 
+/// Renders data from a claim
 pub fn render_claim_data<'a>(claim: &Claim) -> Table<'a> {
     let header_style = Style::default()
         .fg(Color::White)
@@ -692,6 +706,7 @@ pub fn render_claim_data<'a>(claim: &Claim) -> Table<'a> {
     table
 }
 
+/// Renders data from a transaction
 pub fn render_txn_data<'a>(txn: &Txn) -> Table<'a> {
     let header_style = Style::default()
         .fg(Color::White)
@@ -768,6 +783,7 @@ pub fn render_txn_data<'a>(txn: &Txn) -> Table<'a> {
     table
 }
 
+/// Renders the entire claim map as a submenu with data on each claim 
 pub fn render_claim_map<'a>(
     claim_map_list_state: &ListState,
     claim_map: &LinkedHashMap<String, Claim>,
@@ -831,6 +847,7 @@ pub fn render_claim_map<'a>(
     (list, table)
 }
 
+/// Renders the database containing the chain
 pub fn render_chain_db<'a>(path: &String) -> Paragraph<'a> {
     let chain_db = Paragraph::new(vec![
         Spans::from(vec![Span::raw("")]),
@@ -864,6 +881,7 @@ pub fn render_chain_db<'a>(path: &String) -> Paragraph<'a> {
     chain_db
 }
 
+/// Renders the current transaction pool
 pub fn render_txn_pool<'a>(
     txn_pool_status_list_state: &ListState,
     txn_pool_list_state: &ListState,
@@ -985,6 +1003,7 @@ pub fn render_txn_pool<'a>(
     (status_list, txn_list, table)
 }
 
+/// Renders the current pending claim pool
 pub fn render_claim_pool<'a>(
     claim_pool_status_list_state: &ListState,
     claim_pool_list_state: &ListState,
@@ -1106,6 +1125,7 @@ pub fn render_claim_pool<'a>(
     (status_list, claim_list, table)
 }
 
+/// Renders the current reward state
 pub fn render_reward_state<'a>(reward_state: &RewardState) -> Table<'a> {
     let header_style = Style::default()
         .fg(Color::White)
@@ -1173,6 +1193,7 @@ pub fn render_reward_state<'a>(reward_state: &RewardState) -> Table<'a> {
     .widths(&[Constraint::Percentage(35), Constraint::Percentage(65)])
 }
 
+/// Renders the current network state
 pub fn render_network_state<'a>(network_state: &NetworkState) -> Table<'a> {
     let header_style = Style::default()
         .fg(Color::White)
@@ -1214,18 +1235,22 @@ pub fn render_network_state<'a>(network_state: &NetworkState) -> Table<'a> {
     .widths(&[Constraint::Percentage(35), Constraint::Percentage(65)])
 }
 
+/// Renders an empty list
 pub fn render_empty_list<'a>() -> List<'a> {
     List::new(vec![ListItem::new(Spans::from(vec![Span::raw("")]))])
 }
 
+/// gets the credits from the current ledger (REDUNDANT FUNCTION)
 pub fn get_credits(ledger: &Ledger<Claim>) -> LinkedHashMap<String, u128> {
     ledger.credits.clone()
 }
 
+/// gets the debits from the current ledger (REDUNDANT FUNCTION)
 pub fn get_debits(ledger: &Ledger<Claim>) -> LinkedHashMap<String, u128> {
     ledger.debits.clone()
 }
 
+/// Reads events (DEPRECATED) from a json file
 pub fn read_from_json(path: &String) -> Result<Vec<VrrbNetworkEvent>, JsonError> {
     let content = fs::read_to_string(path)?;
     let parsed_json: Vec<VrrbNetworkEvent> = serde_json::from_str(&content)?;

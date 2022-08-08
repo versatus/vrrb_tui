@@ -61,7 +61,7 @@ use udp2p::utils::utils::ByteRep;
 use network::message;
 use std::io::{Read, Write};
 use std::net::{SocketAddrV4, SocketAddrV6};
-use state::state::StateUpdateHead;
+// use state::state::StateUpdateHead;
 
 pub const VALIDATOR_THRESHOLD: f64 = 0.60;
 
@@ -159,6 +159,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let tick_rate = tokio::time::Duration::from_millis(200);
 
+    // A Thread to check for events and if not send a Tick to keep the TUI Alive while running in background of 
+    // a given users machine
     std::thread::spawn(move || {
         let mut last_tick = Instant::now();
         loop {
@@ -182,6 +184,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // Creates the terminal interface on top of whatever terminal is being used
     let stdout = std::io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
@@ -189,6 +192,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let event_file_suffix: u8 = rng.gen();
 
+    // Checks if there is an existing path entered where data should be stored
+    // if not, then creates one. 
     let directory = {
         if let Some(dir) = std::env::args().nth(2) {
             std::fs::create_dir_all(dir.clone())?;
@@ -199,12 +204,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    // Establishes menu titles
     let menu_titles: Vec<_> = vec!["Home", "Wallet", "Mining", "Network", "ChainData"];
     let events_path = format!("{}/events_{}.json", directory.clone(), event_file_suffix);
+    
+    // Creates the events file to store events in
     fs::File::create(events_path.clone()).unwrap();
+
     if let Err(_) = write_to_json(events_path.clone(), VrrbNetworkEvent::VrrbStarted) {
         info!("Error writting to json in main.rs 164");
     }
+    
+    // Establishes some ListStates for navigable lists within the TUI
     let mut active_menu_item = MenuItem::Home;
     let mut wallet_list_state = ListState::default();
     let mut blockchain_fields = ListState::default();
@@ -267,15 +278,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (to_kad_tx, to_kad_rx) = channel();
     let (incoming_ack_tx, incoming_ack_rx): (Sender<AckMessage>, Receiver<AckMessage>) = channel();
     let (to_app_tx, _to_app_rx) = channel::<GossipMessage>();
-
+    //
     //____________________________________________________________________________________________________
-
+    //
+    // Restores a wallet from a secret key if the secret key is entered upon the start of the program
+    // otherwise, creates a new wallet for the local node
     let wallet = if let Some(secret_key) = std::env::args().nth(3) {
         WalletAccount::restore_from_private_key(secret_key)
     } else {
         WalletAccount::new()
     };
 
+    // Gets the path if its provided by the user launching the program, otherwise creates
+    // a path with a random number appended to end to enhance likelihood that the file is unique
+    //TODO: Change rng to a timestamp
     let mut rng = rand::thread_rng();
     let file_suffix: u32 = rng.gen();
     let path = if let Some(path) = std::env::args().nth(5) {
@@ -284,14 +300,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         format!("{}/test_{}.json", directory.clone(), file_suffix)
     };
 
+    // Restores the NetworkState from the path or creates a new NetworkState if the
+    // path is empty
     let mut network_state = NetworkState::restore(&path);
+    // Create a new ledger and set it to the network state
     let ledger = Ledger::new();
     network_state.set_ledger(ledger.as_bytes());
+    // create a new reward state and set it to the network state
     let reward_state = RewardState::start();
     network_state.set_reward_state(reward_state);
 
     //____________________________________________________________________________________________________
-    // Node initialization
+    // Node initialization: Creates a MessageHandler, and a CommandHandler for the node
+    // crates the Node instance with the MessageHandler and CommandHandler, and then clones and saves
+    // the Node's ID and PubKey to a variable for use in other parts of the system
     let to_message_handler = MessageHandler::new(from_message_sender.clone(), to_message_receiver);
     let command_handler = CommandHandler::new(
         to_miner_sender.clone(),
@@ -319,7 +341,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Bind a UDP Socket to a Socket Address with a random port between
     // 9292 and 19292 on the localhost address.
     let sock: UdpSocket = UdpSocket::bind(format!("0.0.0.0:{:?}", port.clone())).expect("Unable to bind to address");
-
 
 
     // // Initialize local peer information
@@ -380,6 +401,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // // Clone the socket for the transport and message handling thread(s)
     let thread_sock = sock.try_clone().expect("Unable to clone socket");
     let addr = local_sock.clone();
+    // Spawns a thread to receive messages to.
     std::thread::spawn(move || {
         let inner_sock = thread_sock.try_clone().expect("Unable to clone socket");
         std::thread::spawn(move || loop {
@@ -395,15 +417,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     
-
+    // Checks if a bootstrap node was provided
     if let Some(to_dial) = args().nth(1) {
+        // If so, calls on the kademlia DHT to bootstrap local node into network
+        // via the bootstrap node
         let bootstrap: SocketAddr = to_dial.parse().expect("Unable to parse address");
         gossip.kad.bootstrap(&bootstrap);
         if let Some(bytes) = info.as_bytes() {
+            // Adds itself to the kademlia DHT
             gossip.kad.add_peer(bytes)
         }
     } else {
         if let Some(bytes) = info.as_bytes() {
+            // If no bootstrap node provided, assumes itself is the bootstrap node
+            // and addes itself to the kademlia DHT
             gossip.kad.add_peer(bytes)
         }
     }
@@ -460,6 +487,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::thread::spawn(move || {
         let mut rng = rand::thread_rng();
         let file_suffix: u32 = rng.gen();
+        // Creates a chain DB (To be replaced by LR State Trie and LR DB)
         let mut blockchain =
             Blockchain::new(&format!("{}/test_chain_{}.db", directory, file_suffix));
         if let Err(_) = blockchain_to_app_sender
@@ -467,6 +495,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         {
             info!("Error sending blockchain update to App receiver.")
         }
+        // Main loop for the blockchain component in the system
+        // Checks if there's a command, and then uses pattern matching to
+        // establish what to do with the command based on the variant
         loop {
             let miner_sender = blockchain_to_miner_sender.clone();
             let swarm_sender = blockchain_to_swarm_sender.clone();
